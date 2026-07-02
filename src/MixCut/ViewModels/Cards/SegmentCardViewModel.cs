@@ -155,6 +155,8 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TranscriptCharCount))]
     [NotifyPropertyChangedFor(nameof(HasTranscript))]
+    [NotifyPropertyChangedFor(nameof(TranscriptReadonlyVisible))]
+    [NotifyPropertyChangedFor(nameof(TranscriptEmptyVisible))]
     private string _transcriptText;
 
     [ObservableProperty]
@@ -182,12 +184,25 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     /// <summary>当前是否选中（高亮显示）。点击卡片切换。</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsBoundaryRowVisible))]
+    [NotifyPropertyChangedFor(nameof(TranscriptActionsVisible))]
     private bool _isSelected;
 
     /// <summary>鼠标是否悬停在卡片上。</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsBoundaryRowVisible))]
+    [NotifyPropertyChangedFor(nameof(TranscriptActionsVisible))]
     private bool _isHovering;
+
+    /// <summary>是否处于台词内联编辑态（显示 TextBox + 保存/取消）。对齐 mac isEditingText。</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TranscriptActionsVisible))]
+    [NotifyPropertyChangedFor(nameof(TranscriptReadonlyVisible))]
+    [NotifyPropertyChangedFor(nameof(TranscriptEmptyVisible))]
+    private bool _isEditingText;
+
+    /// <summary>编辑态下的草稿文本（TextBox 双向绑定）；取消则丢弃，保存才落库。</summary>
+    [ObservableProperty]
+    private string _draftText = string.Empty;
 
     /// <summary>多选模式下是否被勾选。</summary>
     [ObservableProperty]
@@ -233,6 +248,35 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     public int TranscriptCharCount => TranscriptText?.Length ?? 0;
 
     public bool HasTranscript => !string.IsNullOrWhiteSpace(TranscriptText);
+
+    /// <summary>台词区 ✏/↻ 操作按钮是否可见：hover 或选中、且非编辑态（对齐 mac 卡片 header 交互）。
+    /// 空台词也显示，用户可直接 ✏ 输入或 ↻ 重识别 —— 这是 Windows 之前缺失、导致「看不到/不能改」的根因。</summary>
+    public bool TranscriptActionsVisible => (IsHovering || IsSelected) && !IsEditingText;
+
+    /// <summary>只读台词文本是否可见：有台词且非编辑态。</summary>
+    public bool TranscriptReadonlyVisible => HasTranscript && !IsEditingText;
+
+    /// <summary>「暂无台词」占位是否可见：无台词且非编辑态。</summary>
+    public bool TranscriptEmptyVisible => !HasTranscript && !IsEditingText;
+
+    // ============ P3 字幕处理绑定（读写底层 Segment 字段，持久化经 host） ============
+
+    public bool IsVoiceLocked => _segment.IsVoiceLocked;
+    public SubtitleTreatment SubtitleTreatment => _segment.SubtitleTreatment;
+
+    /// <summary>是否显示遮挡框（模糊/纯色需要定位区域，直接烧录不需要）。</summary>
+    public bool NeedsMaskEditor => _segment.SubtitleTreatment != SubtitleTreatment.Direct;
+
+    /// <summary>是否显示字幕预览层（含字号预览）：只要不保留原声就显示（三种字幕处理都要预览字号）。
+    /// 对齐 mac：预览随 !isVoiceLocked 显示，遮挡框另由 <see cref="NeedsMaskEditor"/> 控制。</summary>
+    public bool SubtitlePreviewVisible => !_segment.IsVoiceLocked;
+
+    /// <summary>遮挡框归一化坐标（拖拽期间写内存，松手时经 host 落库）。</summary>
+    public SubtitleMaskRect MaskRect
+    {
+        get => _segment.MaskRect;
+        set { _segment.MaskRect = value; }
+    }
 
     // ============ 命令 ============
 
@@ -355,6 +399,71 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         }
     }
 
+    [RelayCommand]
+    private async Task ToggleVoiceLockAsync()
+    {
+        await _host.ToggleVoiceLockAsync(this, !IsVoiceLocked);
+        _host.RefreshCardFromHost(this);
+    }
+
+    [RelayCommand]
+    private async Task SetTreatmentAsync(string? raw)
+    {
+        if (!Enum.TryParse<SubtitleTreatment>(raw, ignoreCase: true, out var t)) return;
+        await _host.SetSubtitleTreatmentAsync(this, t);
+        _host.RefreshCardFromHost(this);
+    }
+
+    [RelayCommand]
+    private void CommitMask()
+    {
+        _host.CommitMaskRect(this);
+    }
+
+    [RelayCommand]
+    private async Task ApplyMaskToAllAsync()
+    {
+        await _host.ApplyMaskToAllAsync(this);
+        _host.RefreshCardFromHost(this);
+    }
+
+    [RelayCommand]
+    private async Task ReRecognizeAsync()
+    {
+        var newText = await _host.ReRecognizeSegmentAsync(this);
+        if (!string.IsNullOrEmpty(newText))
+        {
+            TranscriptText = newText;
+        }
+        _host.RefreshCardFromHost(this);
+    }
+
+    // ============ 台词内联编辑（对齐 mac 卡片 ✏ → TextEditor → saveText） ============
+
+    /// <summary>进入编辑态：草稿填当前台词，聚焦 TextBox。</summary>
+    [RelayCommand]
+    private void BeginEditText()
+    {
+        DraftText = TranscriptText ?? string.Empty;
+        IsEditingText = true;
+    }
+
+    /// <summary>取消编辑：丢弃草稿。</summary>
+    [RelayCommand]
+    private void CancelEditText()
+    {
+        IsEditingText = false;
+    }
+
+    /// <summary>保存编辑：落库 + 同步内存 + 刷新 UI。</summary>
+    [RelayCommand]
+    private async Task SaveTextAsync()
+    {
+        var saved = await _host.SaveSegmentTextAsync(this, DraftText);
+        TranscriptText = saved;
+        IsEditingText = false;
+    }
+
     // ============ 同步刷新 ============
 
     /// <summary>
@@ -371,6 +480,12 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         SemanticTypes = new ObservableCollection<SemanticType>(_segment.SemanticTypes);
         ThumbnailPath = _segment.ThumbnailPath;
         SegmentIndexLabel = _segment.SegmentIndex ?? string.Empty;
+        // P3 字幕处理属性刷新
+        OnPropertyChanged(nameof(IsVoiceLocked));
+        OnPropertyChanged(nameof(SubtitleTreatment));
+        OnPropertyChanged(nameof(NeedsMaskEditor));
+        OnPropertyChanged(nameof(SubtitlePreviewVisible));
+        OnPropertyChanged(nameof(MaskRect));
     }
 
     public void Dispose()
@@ -396,4 +511,18 @@ public interface ISegmentCardHost
     void UpdatePositionType(SegmentCardViewModel card, PositionType type);
     void ToggleSelection(SegmentCardViewModel card);
     void SelectCard(SegmentCardViewModel card);
+    /// <summary>P3：切换「保留原声」并持久化。</summary>
+    Task ToggleVoiceLockAsync(SegmentCardViewModel card, bool locked);
+    /// <summary>P3：设置字幕处理方式并持久化。</summary>
+    Task SetSubtitleTreatmentAsync(SegmentCardViewModel card, SubtitleTreatment treatment);
+    /// <summary>P3：遮挡框拖拽松手 → 落库一次。</summary>
+    void CommitMaskRect(SegmentCardViewModel card);
+    /// <summary>P3：把当前分镜的字幕处理+遮挡框应用到同视频其余分镜。</summary>
+    Task ApplyMaskToAllAsync(SegmentCardViewModel card);
+    /// <summary>P3：刷新卡片字幕处理绑定（host 持久化后调用）。</summary>
+    void RefreshCardFromHost(SegmentCardViewModel card);
+    /// <summary>P6：单分镜 paraformer ASR 重识别，只替换台词文本。</summary>
+    Task<string> ReRecognizeSegmentAsync(SegmentCardViewModel card, CancellationToken ct = default);
+    /// <summary>手动编辑台词落库（对齐 mac saveText）。返回清洗后的文本。</summary>
+    Task<string> SaveSegmentTextAsync(SegmentCardViewModel card, string newText, CancellationToken ct = default);
 }

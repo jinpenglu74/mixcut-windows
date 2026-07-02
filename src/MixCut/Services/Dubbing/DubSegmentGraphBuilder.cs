@@ -50,8 +50,12 @@ public static class DubSegmentGraphBuilder
                 parts.Add("[base]null[masked]");
                 break;
             case SubtitleMaskMode.Blur:
+                // boxblur 半径必须 ≤ (平面宽-1)/2 且 ≤ (平面高-1)/2；yuv420 色度平面尺寸是亮度的一半，
+                // 是最紧的约束。遮挡框被用户拖很窄时（如 76px），写死 20 会超过色度半高 → ffmpeg
+                // 「Failed to evaluate filter params: -22」整条导出失败。按遮挡区尺寸动态夹到安全半径。
+                var blurRadius = Math.Max(1, Math.Min(20, Math.Min(mw, mh) / 4 - 1));
                 parts.Add("[base]split=2[mb0][mb1]");
-                parts.Add($"[mb1]crop={mw}:{mh}:{mx}:{my},boxblur=20:1[mbb]");
+                parts.Add($"[mb1]crop={mw}:{mh}:{mx}:{my},boxblur={blurRadius}:1[mbb]");
                 parts.Add($"[mb0][mbb]overlay={mx}:{my}[masked]");
                 break;
             case SubtitleMaskMode.Solid:

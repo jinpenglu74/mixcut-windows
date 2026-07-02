@@ -1045,7 +1045,7 @@ public partial class SchemesView : UserControl, IProjectView
 
     /// <summary>横向 Storyboard 卡片：缩略图 + 序号 + 类型 + 台词 + 右键移除。对齐 Mac 版 StoryboardCard。</summary>
     /// <summary>配音变体下拉（v0.5.0）：保留原声锁定 / 无改写版灰字 / 有改写版下拉(默认原声)。</summary>
-    private UIElement BuildVoiceSelector(SchemeSegment schemeSeg, Segment seg)
+    private UIElement BuildVoiceSelector(SchemeSegment schemeSeg, Segment seg, Components.InlineVideoPlayer? player = null)
     {
         var gray = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88));
         if (seg.IsVoiceLocked)
@@ -1081,8 +1081,38 @@ public partial class SchemesView : UserControl, IProjectView
         {
             var sel = (combo.SelectedItem as ComboBoxItem)?.Tag as Guid?;
             _vm.SetSchemeSegmentVoice(schemeSeg, sel);
+            // Point 4：切换变体即时换声（选改写版 → 预览播「克隆配音 + BGM」；选原声 → 还原）。
+            // 下次点击播放生效（SetAudioOverride 仅影响下次 Open；正在播时停掉让用户重点）。
+            ApplyVoiceToPlayer(player, seg, sel);
+            if (player is { IsPlaying: true }) player.StopPlayback();
         };
         return combo;
+    }
+
+    /// <summary>
+    /// Point 4 方案预览换声：把分镜选定的配音变体应用到本卡播放器。
+    /// 选改写版且音频就绪 → 预览播「克隆配音 + 分离 BGM」；否则（原声/锁定/缺音频）→ 还原原声。
+    /// BGM 走 demucs 分离产物 <c>Stems/{hash}/bgm.wav</c>，缺失则只播配音。
+    /// </summary>
+    private static void ApplyVoiceToPlayer(Components.InlineVideoPlayer? player, Segment seg, Guid? dubId)
+    {
+        if (player is null) return;
+        if (!seg.IsVoiceLocked && dubId is { } id)
+        {
+            var dub = seg.EffectiveDubVariants.FirstOrDefault(d => d.Id == id);
+            if (dub is { AudioFilePath: { } ap } && File.Exists(ap))
+            {
+                string? bgm = null;
+                if (seg.Video is { ContentHash: { } hash })
+                {
+                    var cand = System.IO.Path.Combine(Utilities.AppPaths.StemsDirectory(hash), "bgm.wav");
+                    if (File.Exists(cand)) bgm = cand;
+                }
+                player.SetDubAudio(ap, bgm);
+                return;
+            }
+        }
+        player.SetDubAudio(null, null); // 原声
     }
 
     private UIElement BuildStoryboardCard(int position, SchemeSegment schemeSeg)
@@ -1141,10 +1171,14 @@ public partial class SchemesView : UserControl, IProjectView
             ClipToBounds = true,
         };
         var thumbGrid = new Grid();
+        Components.InlineVideoPlayer? storyPlayer = null;
         if (seg.Video is { LocalPath: var path } && File.Exists(path))
         {
             var player = new Components.InlineVideoPlayer();
             player.SetSegment(path, seg.ThumbnailPath, seg.StartFrame, seg.EndFrame, seg.EffectiveFps);
+            // Point 4 方案预览换声：按当前选定变体决定预览播原声还是「克隆配音 + BGM」。
+            ApplyVoiceToPlayer(player, seg, schemeSeg.SelectedSegmentDubId);
+            storyPlayer = player;
             thumbGrid.Children.Add(player);
         }
         else if (LoadThumbStatic(seg.ThumbnailPath) is { } img)
@@ -1215,7 +1249,8 @@ public partial class SchemesView : UserControl, IProjectView
         });
 
         // 配音变体选择（v0.5.0，PRD §六）：保留原声锁定 / 无改写版 / 有改写版下拉（默认原声）。
-        info.Children.Add(BuildVoiceSelector(schemeSeg, seg));
+        // 传入本卡播放器：切换变体时同步换声（Point 4），无需重建整张卡。
+        info.Children.Add(BuildVoiceSelector(schemeSeg, seg, storyPlayer));
 
         // 时长；具体 IN/OUT 时间码放在下方帧边界面板，避免一行塞满信息。
         info.Children.Add(new TextBlock

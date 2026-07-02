@@ -13,16 +13,16 @@ namespace MixCut.Views;
 public partial class SegmentLibraryView : UserControl, IProjectView
 {
     private readonly SegmentLibraryViewModel _vm;
-    private readonly Services.Export.BatchSegmentExportService _batchExport;
+    private readonly Services.Export.VariantBatchExportService _variantExport;
     private readonly Utilities.AppSettings _settings;
 
     public SegmentLibraryView(
         SegmentLibraryViewModel vm,
-        Services.Export.BatchSegmentExportService batchExport,
+        Services.Export.VariantBatchExportService variantExport,
         Utilities.AppSettings settings)
     {
         _vm = vm;
-        _batchExport = batchExport;
+        _variantExport = variantExport;
         _settings = settings;
         InitializeComponent();
         BuildTypeChips();
@@ -117,10 +117,9 @@ public partial class SegmentLibraryView : UserControl, IProjectView
     private void OnBatchExport(object sender, RoutedEventArgs e)
     {
         if (_vm.SelectedSegmentIds.Count == 0) return;
-        var dialog = new BatchExportDialog(
-            _batchExport, _settings,
-            _vm.SelectedSegments,
-            _vm.NumberFor)
+        // 展开成「原版 + 各已生成配音变体」任务（VM 内重载 dubs），对齐 mac 变体批量导出。
+        var jobs = _vm.BuildVariantExportJobs();
+        var dialog = new BatchExportDialog(_variantExport, _settings, jobs)
         {
             Owner = Window.GetWindow(this),
         };

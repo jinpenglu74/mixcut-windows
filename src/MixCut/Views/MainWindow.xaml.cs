@@ -14,7 +14,7 @@ public partial class MainWindow : Window
     private readonly MainViewModel _vm;
     private readonly AppSettings _settings;
     private readonly ExportService _exportService;
-    private readonly BatchSegmentExportService _batchExportService;
+    private readonly VariantBatchExportService _variantExportService;
     private readonly ASRService _asrService;
     private readonly DubbingViewModel _dubbingVm;
     private readonly Services.Dubbing.DubExportService _dubExport;
@@ -26,7 +26,7 @@ public partial class MainWindow : Window
 
     public MainWindow(
         MainViewModel vm, AppSettings settings,
-        ExportService exportService, BatchSegmentExportService batchExportService,
+        ExportService exportService, VariantBatchExportService variantExportService,
         ASRService asrService,
         DubbingViewModel dubbingVm,
         Services.Dubbing.DubExportService dubExport,
@@ -35,7 +35,7 @@ public partial class MainWindow : Window
         _vm = vm;
         _settings = settings;
         _exportService = exportService;
-        _batchExportService = batchExportService;
+        _variantExportService = variantExportService;
         _asrService = asrService;
         _dubbingVm = dubbingVm;
         _dubExport = dubExport;
@@ -177,8 +177,8 @@ public partial class MainWindow : Window
             NavigationItem.ImportMedia => new ImportView(_vm.ImportVM, RefreshAfterProjectChange),
             // Feature flag：默认 V2（MVVM 数据驱动），失败时设 AppSettings.UseNewSegmentLibrary=false 回退 V1。
             NavigationItem.SegmentLibrary => _settings.UseNewSegmentLibrary
-                ? new SegmentLibraryViewV2(_vm.SegmentVM, _batchExportService, _settings)
-                : (FrameworkElement)new SegmentLibraryView(_vm.SegmentVM, _batchExportService, _settings),
+                ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings)
+                : (FrameworkElement)new SegmentLibraryView(_vm.SegmentVM, _variantExportService, _settings),
             NavigationItem.Schemes => new SchemesView(_vm.SchemeVM, _vm.SegmentVM),
             NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings),
             _ => new ProjectOverviewView(_vm, NavigateTo, RefreshAfterProjectChange),

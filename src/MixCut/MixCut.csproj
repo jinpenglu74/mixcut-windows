@@ -6,6 +6,12 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- 根治 WPF 编译卡死：GenerateTemporaryTargetAssembly 会另起一个嵌套 MSBuild 去编译临时
+         .tmp_proj（XAML markup 两遍编译的第一遍），本机上非确定性挂死（进程停在 ~3s CPU 不动）。
+         命令行的 -nodeReuse:false / -p:UseSharedCompilation=false 传不进那个嵌套进程，所以照卡。
+         设 false 让 markup 在同进程/同 AppDomain 内编译，不生成临时项目、不递归 MSBuild，
+         从源头绕开卡死点。见 memory/wpf-build-hang-fix.md。 -->
+    <AlwaysCompileMarkupFilesInSeparateDomain>false</AlwaysCompileMarkupFilesInSeparateDomain>
     <RootNamespace>MixCut</RootNamespace>
     <AssemblyName>MixCut</AssemblyName>
     <LangVersion>latest</LangVersion>
@@ -24,9 +30,9 @@
          修：默认导出 1080p（4K 仍可选）+ 动态超时（按时长×分辨率×软硬编码）+
          4K 串行降并发 + OOM 与编码器崩溃区别处理（OOM 降 1080p 重试而非换 libx264）+
          报错翻译人话。 -->
-    <Version>0.8.1</Version>
-    <AssemblyVersion>0.8.1.0</AssemblyVersion>
-    <FileVersion>0.8.1.0</FileVersion>
+    <Version>0.9.0</Version>
+    <AssemblyVersion>0.9.0.0</AssemblyVersion>
+    <FileVersion>0.9.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

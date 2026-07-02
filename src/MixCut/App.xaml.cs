@@ -65,6 +65,7 @@ public partial class App : Application
         services.AddSingleton<BoundaryOptimizerService>();
         services.AddSingleton<ExportService>();
         services.AddSingleton<BatchSegmentExportService>();
+        services.AddSingleton<VariantBatchExportService>();  // 变体感知批量导出（原版 + 各配音变体）
         // v0.3.1 对齐：启动期版本检测（GitHub 优先 / Gitee 容灾）
         services.AddSingleton<Services.UpdateChecker.UpdateChecker>();
 
@@ -75,6 +76,8 @@ public partial class App : Application
         services.AddSingleton<Services.Dubbing.DubAudioFinalizer>();
         services.AddSingleton<Services.Dubbing.ScriptRewriteService>();
         services.AddSingleton<Services.Dubbing.DubExportService>();
+        services.AddSingleton<Services.Dubbing.ParaformerAsrClient>();
+        services.AddSingleton<Services.Dubbing.SegmentReRecognizer>();
 
         // ViewModel（单例，主窗口持有）。
         services.AddSingleton<ProjectViewModel>();
@@ -367,6 +370,300 @@ public partial class App : Application
     }
 
     /// <summary>
+    /// ① ASR 重识别自测：`--selftest-reasr` 对库里第一个带台词分镜跑一遍 <see cref="DubbingViewModel.ReRecognizeSegmentAsync"/>
+    /// （抽区间音频 → 真调 Paraformer 流式 ASR → 拿回文本），打印「旧文本 vs 新文本」实证 Point 1 网络重识别整链路，
+    /// 跑完<b>把文本还原</b>不改用户数据。需千问 key（缺时从 DASHSCOPE_API_KEY 种入，同 --selftest-dub）。
+    /// </summary>
+    private async Task RunReAsrSelfTestAsync()
+    {
+        try
+        {
+            var factory = _host.Services.GetRequiredService<IDbContextFactory<MixCutDbContext>>();
+            var dub = _host.Services.GetRequiredService<DubbingViewModel>();
+
+            var settings = _host.Services.GetRequiredService<AppSettings>();
+            var envKey = Environment.GetEnvironmentVariable("DASHSCOPE_API_KEY");
+            if (!settings.HasApiKey(Services.AI.AIProviderType.Qwen) && !string.IsNullOrEmpty(envKey))
+            {
+                settings.SaveApiKey(envKey, Services.AI.AIProviderType.Qwen);
+                settings.ActiveProvider = Services.AI.AIProviderType.Qwen;
+                EmitSelfTest("[ReAsrSelfTest] 已从环境变量种入千问 key（仅测试）");
+            }
+
+            Guid segId = Guid.Empty; string oldText = "";
+            using (var db = factory.CreateDbContext())
+            {
+                var s = db.Segments
+                    .Where(x => x.Video != null && x.Text != "")
+                    .OrderBy(x => x.StartFrame)
+                    .FirstOrDefault();
+                if (s is not null) { segId = s.Id; oldText = s.Text; }
+            }
+            if (segId == Guid.Empty)
+            {
+                EmitSelfTest("[ReAsrSelfTest] NO_DATA 库里没有带台词分镜");
+                return;
+            }
+
+            EmitSelfTest($"[ReAsrSelfTest] START seg={segId} 旧文本='{(oldText.Length > 40 ? oldText[..40] + "…" : oldText)}'");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            string newText;
+            try
+            {
+                newText = await dub.ReRecognizeSegmentAsync(segId);
+            }
+            finally
+            {
+                // 还原原文本，不改用户数据（ReRecognizeSegmentAsync 已把 Text 落库）。
+                using var db = factory.CreateDbContext();
+                var t = db.Segments.FirstOrDefault(x => x.Id == segId);
+                if (t is not null) { t.Text = oldText; db.SaveChanges(); }
+                EmitSelfTest("[ReAsrSelfTest] CLEANUP 已还原原文本");
+            }
+            sw.Stop();
+            EmitSelfTest($"[ReAsrSelfTest] DONE 耗时={sw.Elapsed.TotalSeconds:F1}s 新文本='{(newText.Length > 60 ? newText[..60] + "…" : newText)}' 长度={newText.Length}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[ReAsrSelfTest] 异常");
+            Console.WriteLine("[ReAsrSelfTest] EXCEPTION " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// ① 手动编辑台词自测：`--selftest-edittext` 对库里第一个带台词分镜调
+    /// <see cref="DubbingViewModel.UpdateSegmentTextAsync"/> 写一个带标记的新文本，
+    /// 再<b>重新开一个 DbContext 回查</b>确认真落库（验证 §3 编辑台词数据链路），最后还原原文本，不改用户数据。
+    /// </summary>
+    private async Task RunEditTextSelfTestAsync()
+    {
+        try
+        {
+            var factory = _host.Services.GetRequiredService<IDbContextFactory<MixCutDbContext>>();
+            var dub = _host.Services.GetRequiredService<DubbingViewModel>();
+
+            Guid segId = Guid.Empty; string oldText = "";
+            using (var db = factory.CreateDbContext())
+            {
+                var s = db.Segments
+                    .Where(x => x.Video != null && x.Text != "")
+                    .OrderBy(x => x.StartFrame)
+                    .FirstOrDefault();
+                if (s is not null) { segId = s.Id; oldText = s.Text; }
+            }
+            if (segId == Guid.Empty)
+            {
+                EmitSelfTest("[EditTextSelfTest] NO_DATA 库里没有带台词分镜");
+                return;
+            }
+
+            var marker = " 【自测编辑】";
+            var wantText = oldText + marker;
+            EmitSelfTest($"[EditTextSelfTest] START seg={segId} 旧文本长度={oldText.Length}");
+            try
+            {
+                var returned = await dub.UpdateSegmentTextAsync(segId, wantText);
+                // 关键：另开一个 DbContext 回查，确认是真落库而非只改内存。
+                string persisted;
+                using (var db = factory.CreateDbContext())
+                {
+                    persisted = db.Segments.FirstOrDefault(x => x.Id == segId)?.Text ?? "<缺失>";
+                }
+                var ok = persisted == wantText.Trim() && returned == wantText.Trim();
+                EmitSelfTest($"[EditTextSelfTest] VERIFY 落库={(persisted.EndsWith(marker.Trim()) ? "含标记✓" : "无标记✗")} 回查长度={persisted.Length} 期望长度={wantText.Trim().Length} 结果={(ok ? "PASS" : "FAIL")}");
+            }
+            finally
+            {
+                using var db = factory.CreateDbContext();
+                var t = db.Segments.FirstOrDefault(x => x.Id == segId);
+                if (t is not null) { t.Text = oldText; db.SaveChanges(); }
+                EmitSelfTest("[EditTextSelfTest] CLEANUP 已还原原文本");
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[EditTextSelfTest] 异常");
+            Console.WriteLine("[EditTextSelfTest] EXCEPTION " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// ① 逐分镜阿里精识别批量自测：`--selftest-reidbatch` 对库里第一个「有带台词分镜」的视频调
+    /// <see cref="ImportViewModel.ReidentifyVideoAsync"/> 重跑一遍阿里 Paraformer 精识别，
+    /// 回查有多少段文本被覆盖（打印一个前后对比样本），最后<b>还原全部原文本</b>，不改用户数据。
+    /// 验证 §「导入时自动逐分镜精识别」对齐 mac 的核心链路。需千问 key（缺时从 DASHSCOPE_API_KEY 种入）。
+    /// </summary>
+    private async Task RunReidBatchSelfTestAsync()
+    {
+        try
+        {
+            var factory = _host.Services.GetRequiredService<IDbContextFactory<MixCutDbContext>>();
+            var import = _host.Services.GetRequiredService<ImportViewModel>();
+
+            var settings = _host.Services.GetRequiredService<AppSettings>();
+            var envKey = Environment.GetEnvironmentVariable("DASHSCOPE_API_KEY");
+            if (!settings.HasApiKey(Services.AI.AIProviderType.Qwen) && !string.IsNullOrEmpty(envKey))
+            {
+                settings.SaveApiKey(envKey, Services.AI.AIProviderType.Qwen);
+                settings.ActiveProvider = Services.AI.AIProviderType.Qwen;
+                EmitSelfTest("[ReidBatchSelfTest] 已从环境变量种入千问 key（仅测试）");
+            }
+
+            Guid videoId = Guid.Empty; string videoName = "";
+            var snapshot = new System.Collections.Generic.Dictionary<Guid, string>();
+            using (var db = factory.CreateDbContext())
+            {
+                var v = db.Videos.Where(x => x.Segments.Any(s => s.Text != ""))
+                    .OrderBy(x => x.CreatedAt).FirstOrDefault();
+                if (v is not null)
+                {
+                    videoId = v.Id; videoName = v.Name;
+                    foreach (var s in db.Segments.Where(s => s.VideoId == v.Id))
+                        snapshot[s.Id] = s.Text;
+                }
+            }
+            if (videoId == Guid.Empty)
+            {
+                EmitSelfTest("[ReidBatchSelfTest] NO_DATA 库里没有带台词分镜的视频");
+                return;
+            }
+
+            EmitSelfTest($"[ReidBatchSelfTest] START video='{videoName}' 分镜={snapshot.Count}");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var (ok, fail) = await import.ReidentifyVideoAsync(videoId);
+            sw.Stop();
+
+            int changed = 0; string sample = "";
+            using (var db = factory.CreateDbContext())
+            {
+                foreach (var s in db.Segments.Where(s => s.VideoId == videoId))
+                {
+                    if (snapshot.TryGetValue(s.Id, out var old) && old != s.Text)
+                    {
+                        changed++;
+                        if (sample.Length == 0)
+                            sample = $"样本 旧='{(old.Length > 30 ? old[..30] + "…" : old)}' → 新='{(s.Text.Length > 30 ? s.Text[..30] + "…" : s.Text)}'";
+                    }
+                }
+            }
+            EmitSelfTest($"[ReidBatchSelfTest] DONE 耗时={sw.Elapsed.TotalSeconds:F1}s ok={ok} fail={fail} 文本变化={changed}/{snapshot.Count} 结果={(ok > 0 && changed > 0 ? "PASS" : "CHECK")}  {sample}");
+
+            using (var db = factory.CreateDbContext())
+            {
+                foreach (var s in db.Segments.Where(s => s.VideoId == videoId))
+                    if (snapshot.TryGetValue(s.Id, out var old)) s.Text = old;
+                db.SaveChanges();
+            }
+            EmitSelfTest("[ReidBatchSelfTest] CLEANUP 已还原全部原文本");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[ReidBatchSelfTest] 异常");
+            Console.WriteLine("[ReidBatchSelfTest] EXCEPTION " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// v0.7.x 手动添加变体自测：`--selftest-manualadd` 给库里第一个有台词分镜的视频<b>临时</b>种一个假
+    /// ClonedVoiceId（跳过 20min demucs 克隆），对其分镜调 AddManualVariantAsync 验证「点了能加出空白版」，
+    /// 完事把假变体 + 假 voiceId 还原（不污染用户数据）。验证「手动添加点了没反应」是否真在加。
+    /// </summary>
+    private async Task RunManualAddSelfTestAsync()
+    {
+        Guid videoId = Guid.Empty, segId = Guid.Empty;
+        string? originalVoiceId = null;
+        var factory = _host.Services.GetRequiredService<IDbContextFactory<MixCutDbContext>>();
+        try
+        {
+            var dub = _host.Services.GetRequiredService<DubbingViewModel>();
+            using (var db = factory.CreateDbContext())
+            {
+                var seg = db.Segments.Include(s => s.Video)
+                    .Where(s => s.Text != "" && !s.IsVoiceLocked && s.Video != null)
+                    .OrderBy(s => s.StartFrame).FirstOrDefault();
+                if (seg?.Video is null) { EmitSelfTest("[ManualAddSelfTest] NO_DATA 无带台词分镜"); return; }
+                segId = seg.Id; videoId = seg.Video.Id;
+                originalVoiceId = seg.Video.ClonedVoiceId;
+                seg.Video.ClonedVoiceId = "selftest-dummy-voice"; // 跳过真克隆
+                db.SaveChanges();
+            }
+
+            int before, after;
+            using (var db = factory.CreateDbContext())
+                before = db.SegmentDubs.Count(d => d.SegmentId == segId);
+
+            EmitSelfTest($"[ManualAddSelfTest] START seg={segId} 变体数(前)={before}");
+            var idx = await dub.AddManualVariantAsync(segId);
+
+            using (var db = factory.CreateDbContext())
+                after = db.SegmentDubs.Count(d => d.SegmentId == segId);
+            EmitSelfTest($"[ManualAddSelfTest] DONE 返回下标={(idx?.ToString() ?? "null")} 变体数(后)={after} delta={after - before} err={dub.ErrorMessage ?? "无"}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[ManualAddSelfTest] 异常");
+            Console.WriteLine("[ManualAddSelfTest] EXCEPTION " + ex.Message);
+        }
+        finally
+        {
+            // 还原：删掉假 voiceId 加出来的空白变体 + 复原 ClonedVoiceId，不污染用户库。
+            try
+            {
+                using var db = factory.CreateDbContext();
+                var fakes = db.SegmentDubs.Where(d => d.VoiceId == "selftest-dummy-voice").ToList();
+                db.SegmentDubs.RemoveRange(fakes);
+                if (videoId != Guid.Empty)
+                {
+                    var v = db.Videos.FirstOrDefault(v => v.Id == videoId);
+                    if (v != null) v.ClonedVoiceId = originalVoiceId;
+                }
+                db.SaveChanges();
+                EmitSelfTest($"[ManualAddSelfTest] CLEANUP 删假变体={fakes.Count} 复原voiceId={(originalVoiceId ?? "null")}");
+            }
+            catch (Exception ex) { Console.WriteLine("[ManualAddSelfTest] CLEANUP FAIL " + ex.Message); }
+        }
+    }
+
+    /// <summary>
+    /// v0.7.x 人声分离进度自测：对给定短 wav 跑一遍 demucs 分离，把每次百分比回调打到日志。
+    /// 验证 demucs 进度行能被事件读流捕获、解析、经 onPercent 回调上来（构建机自验证，§自我验证铁律）。
+    /// </summary>
+    private async Task RunSepSelfTestAsync(string wavPath)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(wavPath) || !System.IO.File.Exists(wavPath))
+            {
+                EmitSelfTest($"[SepSelfTest] NO_INPUT 找不到输入 wav: '{wavPath}'");
+                return;
+            }
+            var sep = _host.Services.GetRequiredService<Services.Dubbing.VocalSeparationService>();
+            var reports = 0;
+            var lastPct = -1.0;
+            var pct = new Progress<double>(f =>
+            {
+                reports++;
+                lastPct = f;
+            });
+            var text = new Progress<string>(msg => EmitSelfTest($"[SepSelfTest] 阶段: {msg}"));
+            // 用 wav 路径派生一个唯一 hash，强制不命中缓存（每次真跑 demucs）。
+            var hash = "selftest" + Guid.NewGuid().ToString("N")[..8];
+            EmitSelfTest($"[SepSelfTest] START wav='{wavPath}'");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var stems = await sep.SeparateAsync(wavPath, hash, text, pct);
+            sw.Stop();
+            EmitSelfTest($"[SepSelfTest] DONE 百分比回调次数={reports} 末值={lastPct:P0} " +
+                         $"耗时={sw.Elapsed.TotalSeconds:F0}s vocals存在={System.IO.File.Exists(stems.VocalsPath)} " +
+                         $"bgm存在={System.IO.File.Exists(stems.BgmPath)}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[SepSelfTest] 异常");
+            Console.WriteLine("[SepSelfTest] EXCEPTION " + ex.Message);
+        }
+    }
+
+    /// <summary>
     /// v0.5.0 配音组合导出自测：`--selftest-dubexport` 对库里配音变体最多的视频，按其分镜(优先选改写A、
     /// 否则原声)构造一条配音成片导出，验证滤镜图/字幕渲染/-ac2 声道统一/concat/首帧归零/BGM 混音整链路。
     /// </summary>
@@ -446,6 +743,72 @@ public partial class App : Application
         {
             Log.Error(ex, "[DubExportSelfTest] 异常");
             Console.WriteLine("[DubExportSelfTest] EXCEPTION " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// v0.5.0 配音换声预览自测：`--selftest-dubpreview` 对库里第一个有「已生成配音 + 分离 BGM」的分镜，
+    /// 用真 <see cref="Views.Components.FfmpegFramePlayer"/> 设置换声覆盖（克隆配音 + BGM）后离屏播放，
+    /// 验证 Point 4 方案预览换声整链路：视频帧正常渲染 + StartAudio 走 dub 分支（日志 [DubPreviewDiag]）+
+    /// 混音 ffmpeg 进程起得来。与 UIA 点击等价，但无需开窗点击（§自我验证铁律：要实证数字）。
+    /// </summary>
+    private async Task RunDubPreviewSelfTestAsync()
+    {
+        try
+        {
+            var factory = _host.Services.GetRequiredService<IDbContextFactory<MixCutDbContext>>();
+            string videoPath; int startFrame, endFrame; double fps; string dubPath; string? bgm;
+            using (var db = factory.CreateDbContext())
+            {
+                var s = db.Segments
+                    .Include(x => x.Video)
+                    .Include(x => x.SegmentDubs)
+                    .Where(x => x.Video != null && x.SegmentDubs.Any(d => d.AudioFilePath != null))
+                    .OrderBy(x => x.StartFrame)
+                    .FirstOrDefault();
+                if (s is null) { EmitSelfTest("[DubPreviewSelfTest] NO_DATA 无含已生成配音的分镜"); return; }
+                var dub = s.EffectiveDubVariants.FirstOrDefault(d => !string.IsNullOrEmpty(d.AudioFilePath));
+                if (dub is null) { EmitSelfTest("[DubPreviewSelfTest] NO_DATA 分镜无音频变体"); return; }
+                videoPath = s.Video!.LocalPath;
+                startFrame = s.StartFrame; endFrame = s.EndFrame;
+                fps = s.EffectiveFps > 0 ? s.EffectiveFps : 30;
+                dubPath = dub.AudioFilePath!;
+                var cand = string.IsNullOrEmpty(s.Video.ContentHash) ? null
+                    : System.IO.Path.Combine(AppPaths.StemsDirectory(s.Video.ContentHash), "bgm.wav");
+                bgm = !string.IsNullOrEmpty(cand) && System.IO.File.Exists(cand) ? cand : null;
+            }
+
+            var player = new Views.Components.FfmpegFramePlayer { Width = 320, Height = 568 };
+            var failed = false; var ended = false; var reason = "";
+            player.Failed += (_, r) => { failed = true; reason = r; };
+            player.Ended += (_, _) => ended = true;
+            var host = new Window
+            {
+                Width = 360, Height = 620, Left = -3000, Top = -3000,
+                ShowInTaskbar = false, WindowStyle = WindowStyle.None, Content = player,
+            };
+            host.Show();
+            await Task.Delay(200);
+
+            player.SetAudioOverride(dubPath, bgm); // 换声：mute 原声、播「克隆配音 + BGM」
+            var start = Utilities.FrameTime.FrameToSeconds(startFrame, fps);
+            var dur = Utilities.FrameTime.FrameToSeconds(endFrame - startFrame, fps);
+            EmitSelfTest($"[DubPreviewSelfTest] START dub={System.IO.Path.GetFileName(dubPath)} bgm={bgm != null} range=[{startFrame},{endFrame}) dur={dur:F2}s");
+            player.Open(videoPath, start, dur, startFrame: startFrame, endFrame: endFrame, sourceFps: fps);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.Elapsed < TimeSpan.FromSeconds(Math.Max(8, dur + 5)) && !failed && !ended)
+            {
+                await Task.Delay(100);
+            }
+            EmitSelfTest($"[DubPreviewSelfTest] DONE frames={player.FramesRendered} ended={ended} failed={failed} reason={reason}（上方应有 [DubPreviewDiag] 换声预览 dub=... bgm=True，证明走了换声分支）");
+            player.Stop();
+            host.Close();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[DubPreviewSelfTest] 异常");
+            Console.WriteLine("[DubPreviewSelfTest] EXCEPTION " + ex.Message);
         }
     }
 
@@ -584,6 +947,8 @@ public partial class App : Application
             AddColumnIfMissing(db, "Segments", "MaskStyleRaw", "TEXT NOT NULL DEFAULT 'Blur'");
             AddColumnIfMissing(db, "Segments", "MaskRectJson", "TEXT");
             AddColumnIfMissing(db, "Videos", "ClonedVoiceId", "TEXT");
+            // 每个分镜单独克隆音色（配音跟本段原声一致）：Segment 新增自己的克隆音色列
+            AddColumnIfMissing(db, "Segments", "ClonedVoiceId", "TEXT");
             AddColumnIfMissing(db, "SchemeSegments", "SelectedSegmentDubId", "TEXT");
             CreateTableIfMissing(db, "SegmentDubs", @"
                 CREATE TABLE IF NOT EXISTS ""SegmentDubs"" (
@@ -631,6 +996,30 @@ public partial class App : Application
             return;
         }
 
+        // ① ASR 重识别自测：`--selftest-reasr` 真调 Paraformer 对一个分镜重识别后退出（还原文本，不改数据）。
+        if (Array.IndexOf(e.Args, "--selftest-reasr") >= 0)
+        {
+            await RunReAsrSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
+        // ① 手动编辑台词自测：`--selftest-edittext` 写带标记文本后回查落库再还原（验证 §3 编辑台词数据链路）。
+        if (Array.IndexOf(e.Args, "--selftest-edittext") >= 0)
+        {
+            await RunEditTextSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
+        // ① 逐分镜阿里精识别批量自测：`--selftest-reidbatch` 对第一个视频重跑精识别、回查文本变化、还原原文本。
+        if (Array.IndexOf(e.Args, "--selftest-reidbatch") >= 0)
+        {
+            await RunReidBatchSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
         // v0.5.0 配音自测：`--selftest-dub` 对真实视频跑一遍 RewriteAll 全链路后退出（构建机验证服务引擎）。
         if (Array.IndexOf(e.Args, "--selftest-dub") >= 0)
         {
@@ -643,6 +1032,32 @@ public partial class App : Application
         if (Array.IndexOf(e.Args, "--selftest-dubexport") >= 0)
         {
             await RunDubExportSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
+        // v0.5.0 配音换声预览自测：`--selftest-dubpreview` 离屏播一段「克隆配音 + BGM」换声预览后退出。
+        if (Array.IndexOf(e.Args, "--selftest-dubpreview") >= 0)
+        {
+            await RunDubPreviewSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
+        // v0.7.x 人声分离进度自测：`--selftest-sep <wav>` 对给定短 wav 跑一遍 demucs 分离，
+        // 把实时百分比回调打到日志（[SepProgress]），验证「进度解析 + 事件读流 + 回调链」端到端在工作。
+        var sepIdx = Array.IndexOf(e.Args, "--selftest-sep");
+        if (sepIdx >= 0)
+        {
+            await RunSepSelfTestAsync(sepIdx + 1 < e.Args.Length ? e.Args[sepIdx + 1] : "");
+            Shutdown();
+            return;
+        }
+
+        // v0.7.x 手动添加变体自测：`--selftest-manualadd` 种假克隆后验证手动添加能加出空白版，再还原。
+        if (Array.IndexOf(e.Args, "--selftest-manualadd") >= 0)
+        {
+            await RunManualAddSelfTestAsync();
             Shutdown();
             return;
         }
@@ -666,6 +1081,10 @@ public partial class App : Application
 
         // 首次启动：展示 4 步使用引导（macOS @AppStorage("hasCompletedOnboarding") 对应）。
         var settings = _host.Services.GetRequiredService<AppSettings>();
+
+        // 全局字幕字号比例：从设置读初值 + 绑定落盘回调（滑条 / 预览 / 导出烧录共用一份）。
+        ViewModels.SubtitleFontState.Shared.Attach(settings);
+
         if (!settings.HasCompletedOnboarding)
         {
             var onboarding = _host.Services.GetRequiredService<OnboardingWindow>();

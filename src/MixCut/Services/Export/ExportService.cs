@@ -103,6 +103,22 @@ public sealed class ExportService
             $"正在编码... {(int)(ffmpegProgress.Percentage * 100)}%"));
 
         var isHardware = config.Codec.IsHardware();
+
+        // 硬件解码仅对「大分辨率源」（4K 等，长边 > 1920）+「NVIDIA CUDA」启用。
+        // 为什么只 cuda：导出滤镜图是软件滤镜（trim/scale/pad/concat），需要帧在系统内存。
+        //   · cuda：-hwaccel cuda 会在软件滤镜前自动 hwdownload 回内存，可用（N 卡用户即本次报障硬件）；
+        //   · qsv：朴素 -hwaccel qsv 喂软件滤镜会 -40「Function not implemented」（构建机 Intel 实测失败），
+        //          正确做法要全程 vpp_qsv GPU 滤镜链，复杂且本机才有，故 qsv/AMD/无卡一律不启用 → 走原软解路径（零回归）。
+        // 真凶是 4K 源软件解码 + 多路并发抢 CPU；cuda 解码可大幅缓解。cuda 路径构建机测不了，
+        // 靠下方软解兜底保正确性，提速效果需 N 卡机器实测（CLAUDE.md §C / §兼容性总纲）。
+        var sourceMaxDim = Math.Max(input.MaxWidth, input.MaxHeight);
+        var decodeHw = (sourceMaxDim > 1920 && Infrastructure.HardwareEncoderProbe.DecodeHwaccel == "cuda")
+            ? "cuda" : null;
+        if (decodeHw is not null)
+        {
+            _logger.LogInformation("[ExportDecode] 源长边={Dim} 启用 CUDA 硬件解码", sourceMaxDim);
+        }
+
         try
         {
             await _ffmpeg.ConcatAsync(
@@ -110,7 +126,8 @@ public sealed class ExportService
                 config.Quality.Crf(config.Codec), config.Codec.FfmpegCodec(),
                 isHardware: isHardware,
                 videoBitrateKbps: config.Quality.VideoBitrateKbps(config.Codec),
-                onProgress: reportEncode, cancellationToken: cancellationToken);
+                onProgress: reportEncode, cancellationToken: cancellationToken,
+                decodeHwaccel: decodeHw);
         }
         catch (OperationCanceledException)
         {
@@ -138,7 +155,8 @@ public sealed class ExportService
                 config.Quality.Crf(config.Codec), config.Codec.FfmpegCodec(),
                 isHardware: isHardware,
                 videoBitrateKbps: config.Quality.VideoBitrateKbps(config.Codec),
-                onProgress: reportEncode, cancellationToken: cancellationToken);
+                onProgress: reportEncode, cancellationToken: cancellationToken,
+                decodeHwaccel: decodeHw);
             _logger.LogInformation("[ExportOOM] 降 1080p 重试成功: {Output}", outputPath);
         }
         catch (VideoProcessing.FFmpegException ffEx)
@@ -158,10 +176,31 @@ public sealed class ExportService
                 config.Quality.Crf(ExportCodec.H264), ExportCodec.H264.FfmpegCodec(),
                 isHardware: false,
                 videoBitrateKbps: config.Quality.VideoBitrateKbps(ExportCodec.H264),
-                onProgress: reportEncode, cancellationToken: cancellationToken);
+                onProgress: reportEncode, cancellationToken: cancellationToken,
+                decodeHwaccel: null);
             _logger.LogInformation("[ExportFallback] CPU 降级编码成功: {Output}", outputPath);
         }
-        // Timeout / Other：不盲目重试，原样抛出，由上层 ExportErrorMessage 翻译成人话。
+        catch (VideoProcessing.FFmpegException ffEx)
+            when (decodeHw != null)
+        {
+            // 硬件解码超时/失败（卡死、HW frames 初始化失败、某些 4K HEVC 不被 GPU 接受等）
+            // → 关掉硬解、纯软解重试一次（编码器保持不变）。守住「装上即跑」：硬解只为提速，失败绝不让用户导不出。
+            // 构建机是 Intel，测不了 N 卡 cuda 解码路径，全靠这条兜底保正确性（CLAUDE.md §C / §兼容性总纲）。
+            // 注：Oom / 硬件编码崩溃已在上面分支处理；走到这里的是超时或其它硬解相关失败。
+            _logger.LogWarning(ffEx,
+                "[ExportDecodeFallback] 硬件解码失败/超时，关硬解软解重试: {Output}", outputPath);
+            onProgress?.Invoke(new ExportProgress(
+                ExportPhase.Encoding, 0.05, "硬件解码不可用，正在用软件解码重新导出（较慢）..."));
+            await _ffmpeg.ConcatAsync(
+                input.Segments, outputPath, resolution,
+                config.Quality.Crf(config.Codec), config.Codec.FfmpegCodec(),
+                isHardware: isHardware,
+                videoBitrateKbps: config.Quality.VideoBitrateKbps(config.Codec),
+                onProgress: reportEncode, cancellationToken: cancellationToken,
+                decodeHwaccel: null);
+            _logger.LogInformation("[ExportDecodeFallback] 软解重试成功: {Output}", outputPath);
+        }
+        // Timeout / Other（且无硬解可关）：不盲目重试，原样抛出，由上层 ExportErrorMessage 翻译成人话。
 
         onProgress?.Invoke(new ExportProgress(ExportPhase.Completed, 1.0, "导出完成"));
         _logger.LogInformation("导出完成: {Output}", outputPath);

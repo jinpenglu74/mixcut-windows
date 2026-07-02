@@ -15,45 +15,40 @@ namespace MixCut.Views;
 /// </summary>
 public partial class BatchExportDialog : Window
 {
-    private readonly BatchSegmentExportService _exportService;
+    private readonly VariantBatchExportService _exportService;
     private readonly AppSettings _settings;
-    private readonly IReadOnlyList<BatchExportItem> _items;
+    private readonly IReadOnlyList<VariantExportJob> _jobs;
     private CancellationTokenSource? _cts;
     private string? _outputDirectory;
     private bool _isExporting;
     private bool _didFinish;
 
+    /// <summary>
+    /// 变体感知批量导出对话框。<paramref name="jobs"/> 由 VM 展开好（原版 + 各已生成配音变体），
+    /// 对齐 mac BatchExportSheet 用 VariantBatchExportService。保留原声 / 无变体的分镜只出原版。
+    /// </summary>
     public BatchExportDialog(
-        BatchSegmentExportService exportService,
+        VariantBatchExportService exportService,
         AppSettings settings,
-        IReadOnlyList<Segment> segments,
-        Func<Segment, int> numberProvider)
+        IReadOnlyList<VariantExportJob> jobs)
     {
         _exportService = exportService;
         _settings = settings;
+        _jobs = jobs;
         InitializeComponent();
 
-        _items = segments
-            .Where(s => s.Video is not null && !string.IsNullOrEmpty(s.Video.LocalPath))
-            .Select(s => new BatchExportItem(
-                Id: s.Id,
-                SourcePath: s.Video!.LocalPath,
-                SourceVideoName: Path.GetFileNameWithoutExtension(s.Video.Name),
-                StartFrame: s.StartFrame,
-                EndFrame: s.EndFrame,
-                Fps: s.EffectiveFps > 0 ? s.EffectiveFps : 30,
-                SequenceNumber: numberProvider(s)))
-            .ToList();
-
-        TitleText.Text = $"批量导出 {_items.Count} 个分镜";
+        var variantCount = _jobs.Count(j => j.IsVariant);
+        TitleText.Text = variantCount > 0
+            ? $"批量导出 {_jobs.Count} 个文件（含 {variantCount} 个配音变体）"
+            : $"批量导出 {_jobs.Count} 个分镜";
 
         // 显示文件列表
-        FileListLabel.Text = $"文件列表（{_items.Count} 个）";
-        var totalDur = _items.Sum(i => i.Duration);
+        FileListLabel.Text = $"文件列表（{_jobs.Count} 个）";
+        var totalDur = _jobs.Sum(j => j.DurationSeconds);
         TotalDurationText.Text = $"总时长 {Utilities.FrameTime.HumanDuration(totalDur)}";
-        FileListItems.ItemsSource = _items.Select(i => new FileListItem(
-            FileName: i.FileName,
-            DurationText: $"{i.Duration.ToString("F1", CultureInfo.InvariantCulture)}s"))
+        FileListItems.ItemsSource = _jobs.Select(j => new FileListItem(
+            FileName: j.IsVariant ? $"{j.FileName}　· 配音" : j.FileName,
+            DurationText: $"{j.DurationSeconds.ToString("F1", CultureInfo.InvariantCulture)}s"))
             .ToList();
 
         // 恢复上次目录
@@ -78,7 +73,7 @@ public partial class BatchExportDialog : Window
 
     private void UpdatePrimaryButtonState()
     {
-        PrimaryButton.IsEnabled = !_isExporting && _outputDirectory is not null && _items.Count > 0;
+        PrimaryButton.IsEnabled = !_isExporting && _outputDirectory is not null && _jobs.Count > 0;
     }
 
     private void OnPickDirectory(object sender, RoutedEventArgs e)
@@ -124,7 +119,7 @@ public partial class BatchExportDialog : Window
             var dir = _outputDirectory;
 
             var result = await _exportService.ExportAllAsync(
-                _items, dir,
+                _jobs, dir, null,
                 progress => Dispatcher.Invoke(() => OnProgress(progress)),
                 _cts.Token);
 
@@ -150,7 +145,7 @@ public partial class BatchExportDialog : Window
             {
                 FailedListBox.Visibility = Visibility.Visible;
                 FailedItems.ItemsSource = result.Failed
-                    .Select(p => new FailedItemDisplay(p.Item1.FileName, p.Item2))
+                    .Select(p => new FailedItemDisplay(p.Name, p.Error))
                     .ToList();
             }
 
@@ -196,20 +191,20 @@ public partial class BatchExportDialog : Window
         }
     }
 
-    private void OnProgress(SegmentBatchExportProgress p)
+    private void OnProgress(VariantExportProgress p)
     {
-        ProgressCountText.Text = $"{p.CompletedCount} / {p.TotalCount} 已完成";
-        ProgressPctText.Text = $"{(int)(p.TotalProgress * 100)}%";
-        ProgressBar.Value = p.TotalProgress;
-        if (p.CurrentItem is not null)
+        ProgressCountText.Text = $"{p.Completed} / {p.Total} 已完成";
+        ProgressPctText.Text = $"{(int)(p.Fraction * 100)}%";
+        ProgressBar.Value = p.Fraction;
+        if (p.CurrentName is not null)
         {
-            CurrentItemText.Text = $"当前：{p.CurrentItem.FileName}";
-            CurrentSubText.Text = $"切片中 {p.CurrentItem.Duration.ToString("F1", CultureInfo.InvariantCulture)} 秒";
+            CurrentItemText.Text = $"当前：{p.CurrentName}";
+            CurrentSubText.Text = $"处理中 {p.CurrentDurationSeconds.ToString("F1", CultureInfo.InvariantCulture)} 秒";
         }
-        if (p.FailedItems.Count > 0)
+        if (p.Failed.Count > 0)
         {
             FailedCountText.Visibility = Visibility.Visible;
-            FailedCountText.Text = $"⚠ 已失败 {p.FailedItems.Count} 个";
+            FailedCountText.Text = $"⚠ 已失败 {p.Failed.Count} 个";
         }
     }
 

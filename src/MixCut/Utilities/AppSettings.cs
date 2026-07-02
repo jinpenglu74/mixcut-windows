@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using MixCut.Models;
 using MixCut.Services.AI;
 
 namespace MixCut.Utilities;
@@ -301,6 +303,43 @@ public sealed class AppSettings
     {
         get => int.TryParse(Get("dub_variant_count"), out var n) ? Math.Clamp(n, 1, 5) : 2;
         set => Set("dub_variant_count", Math.Clamp(value, 1, 5).ToString());
+    }
+
+    /// <summary>
+    /// 配音克隆「高保真参考」配方标记：记录哪些视频（按 contentHash）的克隆音色是用
+    /// 44.1k 立体声参考注册的。v0.7.x 之前用 24k 单声道参考 → 克隆像机器朗读；升级后需
+    /// 让这些存量克隆失效重注册（人声分离已缓存，重注册仅几秒）。哈希不在集合里 = 旧配方 = 该重克隆。
+    /// </summary>
+    public bool IsCloneHiFi(string videoHash)
+    {
+        if (string.IsNullOrEmpty(videoHash)) return false;
+        var raw = Get("clone_hifi_hashes");
+        if (string.IsNullOrEmpty(raw)) return false;
+        return raw.Split('\n', StringSplitOptions.RemoveEmptyEntries).Contains(videoHash);
+    }
+
+    /// <summary>标记某视频的克隆音色已用高保真参考注册。</summary>
+    public void MarkCloneHiFi(string videoHash)
+    {
+        if (string.IsNullOrEmpty(videoHash)) return;
+        var raw = Get("clone_hifi_hashes");
+        var set = string.IsNullOrEmpty(raw)
+            ? new HashSet<string>()
+            : raw.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        if (set.Add(videoHash)) Set("clone_hifi_hashes", string.Join('\n', set));
+    }
+
+    /// <summary>
+    /// 烧录字幕字号（全局比例，相对成片宽度）。对齐 macOS @AppStorage("subtitleFontRatio")。
+    /// 存/取都夹到 <see cref="SubtitleFontSize"/> 合法区间；无值回退默认 5.5%。
+    /// UI 滑条与导出烧录共用此值 —— 所见即所得。用不变文化格式化，避免不同区域小数点分隔符差异。
+    /// </summary>
+    public double SubtitleFontRatio
+    {
+        get => double.TryParse(Get("subtitle_font_ratio"), NumberStyles.Float, CultureInfo.InvariantCulture, out var r)
+            ? SubtitleFontSize.Clamp(r)
+            : SubtitleFontSize.DefaultRatio;
+        set => Set("subtitle_font_ratio", SubtitleFontSize.Clamp(value).ToString(CultureInfo.InvariantCulture));
     }
 
     // ---- 迁移持久化 flag（v0.6.0 对齐 Mac v0.3.x） ----

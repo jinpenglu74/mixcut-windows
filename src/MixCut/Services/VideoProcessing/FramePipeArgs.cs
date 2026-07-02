@@ -54,6 +54,36 @@ public static class FramePipeArgs
         "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1",
     };
 
+    /// <summary>
+    /// 配音换声预览音频管道（Point 4 方案预览换声）：克隆配音 dub（从头播）+ 分离背景乐 bgm
+    /// （seek 到分镜在整片中的起点 <paramref name="bgmStart"/>）混音 → s16le PCM 喂声卡，替代原声。
+    /// 与导出 <c>DubSegmentGraphBuilder</c> 同口径：bgm <c>volume=0.6</c>、
+    /// <c>amix=inputs=2:duration=first:normalize=0</c>（输出长度跟 dub，画面/配音对齐）。
+    /// <paramref name="bgmPath"/> 为 null（分离产物缺失）时只播配音、不混 BGM。
+    /// </summary>
+    public static string[] AudioDubBgm(string dubPath, string? bgmPath, double bgmStart, double dur)
+    {
+        if (string.IsNullOrEmpty(bgmPath))
+        {
+            return new[]
+            {
+                "-i", dubPath, "-vn",
+                "-af", "aresample=44100",
+                "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1",
+            };
+        }
+        return new[]
+        {
+            "-i", dubPath,
+            "-ss", F(bgmStart), "-i", bgmPath, "-t", F(dur),
+            "-filter_complex",
+            "[0:a]aresample=44100[v];[1:a]aresample=44100,volume=0.6[b];" +
+            "[v][b]amix=inputs=2:duration=first:normalize=0[a]",
+            "-map", "[a]", "-vn",
+            "-f", "s16le", "-ar", "44100", "-ac", "2", "pipe:1",
+        };
+    }
+
     /// <summary>一帧 bgra 的字节数（宽 × 高 × 4 通道）。</summary>
     public static int FrameBytes(int w, int h) => w * h * 4;
 }

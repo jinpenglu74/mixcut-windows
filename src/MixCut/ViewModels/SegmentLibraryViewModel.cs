@@ -174,6 +174,33 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
     }
 
     /// <summary>
+    /// 为「批量导出」构建变体任务列表：按当前选中分镜从库里<b>重新加载（含 Video + SegmentDubs）</b>，
+    /// 再展开成「原版 + 各已生成变体」。必须重载 dubs —— <see cref="LoadSegments"/> 只 Include 了 Video，
+    /// 直接读 <c>EffectiveDubVariants</c> 拿不到变体（会退化成只导原版）。对齐 mac VariantExportInput.from。
+    /// </summary>
+    public IReadOnlyList<Services.Export.VariantExportJob> BuildVariantExportJobs()
+    {
+        var orderedSelected = SelectedSegments;   // 已按视频 + StartTime 排序
+        var ids = orderedSelected.Select(s => s.Id).ToList();
+        if (ids.Count == 0) return Array.Empty<Services.Export.VariantExportJob>();
+
+        using var db = _dbFactory.CreateDbContext();
+        var fresh = db.Segments
+            .Include(s => s.Video)
+            .Include(s => s.SegmentDubs)
+            .Where(s => ids.Contains(s.Id))
+            .ToList()
+            .ToDictionary(s => s.Id);
+
+        // 保持选中排序；NumberFor 按 Video.Id + Segment.Id 取号，对新实例同样有效。
+        var segsInOrder = orderedSelected
+            .Where(s => fresh.ContainsKey(s.Id))
+            .Select(s => fresh[s.Id])
+            .ToList();
+        return Services.Export.VariantExportInput.From(segsInOrder, NumberFor);
+    }
+
+    /// <summary>
     /// 已选分镜，按用户勾选先后顺序（v0.3.2 对齐 Mac c9a1e4e）。
     /// 供「✨ 组合为方案」场景使用 —— SelectedSegments 是按视频+StartTime 排序的版本，给批量导出用。
     /// </summary>

@@ -45,7 +45,8 @@ public sealed class FFmpegRunner
         double? totalDuration = null,
         Action<FFmpegProgress>? onProgress = null,
         TimeSpan? timeout = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? stallTimeout = null)
     {
         if (!BundledBinaries.FfmpegAvailable)
         {
@@ -69,7 +70,7 @@ public sealed class FFmpegRunner
 
         var (exitCode, stdout, stderr) = await ExecuteAsync(
             BundledBinaries.Ffmpeg, arguments, captureStdout: true,
-            stderrHandler, timeout ?? DefaultTimeout, cancellationToken);
+            stderrHandler, timeout ?? DefaultTimeout, cancellationToken, stallTimeout);
 
         if (exitCode != 0)
         {
@@ -165,7 +166,8 @@ public sealed class FFmpegRunner
 
     private async Task<(int ExitCode, byte[] Stdout, string Stderr)> ExecuteAsync(
         string exePath, IReadOnlyList<string> arguments, bool captureStdout,
-        Action<string>? stderrHandler, TimeSpan timeout, CancellationToken cancellationToken)
+        Action<string>? stderrHandler, TimeSpan timeout, CancellationToken cancellationToken,
+        TimeSpan? stallTimeout = null)
     {
         var psi = new ProcessStartInfo
         {
@@ -193,11 +195,50 @@ public sealed class FFmpegRunner
             ? ReadAllBytesAsync(process.StandardOutput.BaseStream)
             : DiscardAsync(process.StandardOutput.BaseStream);
 
+        // 「按进度判活」超时：stallTimeout 非空时，timeout 退化为绝对上限（防跑飞兜底），
+        // 真正判死靠「连续 stallTimeout 无任何 stderr 活动（进度/日志）」。这样慢但仍在出帧的导出
+        // （如 4K 软解）不会被误杀，只有真正卡死（无进度）才终止。lastActivity 用数组装箱以便 Interlocked 跨线程读写。
+        var lastActivity = new long[] { Environment.TickCount64 };
+        Action<string>? activityHandler = stderrHandler;
+        if (stallTimeout is not null)
+        {
+            activityHandler = line =>
+            {
+                Interlocked.Exchange(ref lastActivity[0], Environment.TickCount64);
+                stderrHandler?.Invoke(line);
+            };
+        }
+
         // stderr 按行读取，逐行回调（FFmpeg 进度行以 \r 分隔）。
-        var stderrTask = ReadStderrAsync(process.StandardError, stderrHandler);
+        var stderrTask = ReadStderrAsync(process.StandardError, activityHandler);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(timeout);
+        timeoutCts.CancelAfter(timeout); // 绝对上限（stallTimeout 模式下给得很宽）
+
+        var stalled = false;
+        Task? watchdog = null;
+        using var watchdogStop = new CancellationTokenSource();
+        if (stallTimeout is { } stall)
+        {
+            var stallMs = (long)stall.TotalMilliseconds;
+            watchdog = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!watchdogStop.IsCancellationRequested)
+                    {
+                        await Task.Delay(5000, watchdogStop.Token);
+                        if (Environment.TickCount64 - Interlocked.Read(ref lastActivity[0]) > stallMs)
+                        {
+                            stalled = true;
+                            try { timeoutCts.Cancel(); } catch { /* 已释放 */ }
+                            return;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) { /* 正常停表 */ }
+            });
+        }
 
         try
         {
@@ -214,8 +255,20 @@ public sealed class FFmpegRunner
                 // 接不住，会把「用户取消」误判为「硬件编码失败」触发不必要的 CPU 降级 / 误报导出失败。
                 throw new OperationCanceledException(cancellationToken);
             }
-            _logger.LogError("FFmpeg 进程超时（{Minutes} 分钟），强制终止", timeout.TotalMinutes);
+            if (stalled)
+            {
+                _logger.LogError("FFmpeg 进程卡死（{Sec:F0}s 无任何进度），强制终止", stallTimeout!.Value.TotalSeconds);
+            }
+            else
+            {
+                _logger.LogError("FFmpeg 进程超时（绝对上限 {Minutes:F0} 分钟），强制终止", timeout.TotalMinutes);
+            }
             throw FFmpegException.ExecutionFailed(-1, "进程超时");
+        }
+        finally
+        {
+            watchdogStop.Cancel();
+            if (watchdog is not null) { try { await watchdog; } catch { /* ignore */ } }
         }
 
         var stdout = await stdoutTask;
@@ -512,7 +565,8 @@ public sealed class FFmpegRunner
         bool isHardware = false,
         int videoBitrateKbps = 8_000,
         Action<FFmpegProgress>? onProgress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? decodeHwaccel = null)
     {
         if (segments.Count == 0)
         {
@@ -529,8 +583,15 @@ public sealed class FFmpegRunner
         var args = new List<string>();
 
         // 每个片段作为独立输入，真正裁切在 filter_complex 中按帧执行。
+        // decodeHwaccel 非空时给每个输入前置 -hwaccel（GPU 解码 → 自动 download 回内存供软件滤镜消费）。
+        // 仅在源为 4K 等大分辨率时由 ExportService 传入（1080p 软解本就够快、不引入风险）；
+        // 失败/卡死由 ExportService 自动降级为软解重试（见 §兼容性总纲：硬件能力必须有兜底）。
         foreach (var seg in segments)
         {
+            if (!string.IsNullOrEmpty(decodeHwaccel))
+            {
+                args.AddRange(new[] { "-hwaccel", decodeHwaccel });
+            }
             args.AddRange(new[] { "-i", seg.Path });
         }
 
@@ -612,22 +673,26 @@ public sealed class FFmpegRunner
 
         var totalDuration = segments.Sum(s => s.Duration);
 
-        // 动态超时：导出拼接耗时随「输出像素 × 成片时长 × 编码方式」线性增长，绝不写死。
-        //   pixelFactor: 1080p=1.0，4K(2160×3840)≈4.0；
-        //   speedFactor: libx264 软编比 nvenc 慢 5-8×，取 6；硬件取 1；
-        //   下限 2 分钟防极短片把超时算成几秒；无上限（4K/CPU 降级可能要几十分钟，必须给够）。
+        // 超时策略（v0.8.2 改）：旧公式 timeout=max(dur×2.5×…,120s) 假设「硬件=快」，
+        // 完全没算「源是 4K、软解约 4× 慢、还多路并发抢 CPU」，导致 4K 用户 30s 成片被 120s 误杀
+        // （真凶是软件解码 4K，不是输出分辨率）。改为「按进度判活」：
+        //   · 绝对上限 absoluteCeiling 给得很宽（防真跑飞），按输出像素 × 时长 × 编码方式 × 4 估，下限 10 分钟；
+        //   · 真正判死靠 stallTimeout —— 连续 90s 无任何 ffmpeg 进度/日志输出才算卡死。
+        // 这样「慢但仍在出帧」的导出能跑完，只有真卡死才终止。
         var outputPixels = ParsePixels(targetScale);
         var pixelFactor = outputPixels / (1920.0 * 1080.0);
         var speedFactor = isHardware ? 1.0 : 6.0;
         var perOutputSec = 2.5 * pixelFactor * speedFactor;
-        var exportTimeout = TimeSpan.FromSeconds(Math.Max(totalDuration * perOutputSec, 120));
+        var absoluteCeiling = TimeSpan.FromSeconds(Math.Max(totalDuration * perOutputSec * 4, 600));
+        var stallTimeout = TimeSpan.FromSeconds(90);
         Serilog.Log.Information(
-            "[ExportTimeout] totalDur={Dur:F1}s pixels={Px} hw={Hw} timeout={Timeout:F0}s",
-            totalDuration, outputPixels, isHardware, exportTimeout.TotalSeconds);
+            "[ExportTimeout] totalDur={Dur:F1}s pixels={Px} hw={Hw} decode={Dec} ceiling={Ceil:F0}s stall={Stall:F0}s",
+            totalDuration, outputPixels, isHardware, decodeHwaccel ?? "(software)",
+            absoluteCeiling.TotalSeconds, stallTimeout.TotalSeconds);
 
-        // ⚠️ 命名参数：RunAsync 新增的 timeout 在 cancellationToken 之前，
-        //   必须命名传参，否则 token 会被当成 timeout、取消失效。
-        await RunAsync(args, totalDuration, onProgress, timeout: exportTimeout, cancellationToken: cancellationToken);
+        // ⚠️ 命名参数：timeout / stallTimeout 在 cancellationToken 前后，必须命名传参。
+        await RunAsync(args, totalDuration, onProgress,
+            timeout: absoluteCeiling, cancellationToken: cancellationToken, stallTimeout: stallTimeout);
     }
 
     /// <summary>把 "W:H" 形式的目标分辨率解析成像素总数；失败回退 1080p。</summary>

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using Microsoft.Extensions.Logging;
 using MixCut.Infrastructure;
+using MixCut.Models;
 using MixCut.Services.Export;
 using MixCut.Services.VideoProcessing;
 using MixCut.Utilities;
@@ -16,11 +17,13 @@ public sealed class DubExportService
 {
     private readonly FFmpegRunner _ffmpeg;
     private readonly ILogger<DubExportService> _logger;
+    private readonly AppSettings _settings;
 
-    public DubExportService(FFmpegRunner ffmpeg, ILogger<DubExportService> logger)
+    public DubExportService(FFmpegRunner ffmpeg, ILogger<DubExportService> logger, AppSettings settings)
     {
         _ffmpeg = ffmpeg;
         _logger = logger;
+        _settings = settings;
     }
 
     /// <summary>导出一条配音成片到 <paramref name="outputPath"/>。</summary>
@@ -57,6 +60,29 @@ public sealed class DubExportService
         }
     }
 
+    /// <summary>
+    /// 渲染单个分镜为独立 mp4（分镜库「变体导出」用）。分辨率按本片自身宽高与 config 计算，不与其他片拼接。
+    /// 对齐 mac DubExportService.exportSingleSegment。单片重编码起点已归零（setpts=PTS-STARTPTS），
+    /// 无 concat 的 AAC priming 偏移问题，直接写 outputPath。
+    /// </summary>
+    public async Task ExportSingleSegmentAsync(
+        DubSegmentSpec spec, int videoWidth, int videoHeight, string outputPath,
+        ExportConfig? config = null, CancellationToken ct = default)
+    {
+        config ??= new ExportConfig();
+        var (outW, outH) = Resolution(config, videoWidth, videoHeight);
+        var workDir = Path.Combine(Path.GetTempPath(), $"mixcut-dubseg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDir);
+        try
+        {
+            await RenderSegmentAsync(spec, 0, outW, outH, workDir, config, outputPath, ct);
+        }
+        finally
+        {
+            try { Directory.Delete(workDir, true); } catch { /* 忽略 */ }
+        }
+    }
+
     // ---- 单分镜中间片 ----
 
     private async Task RenderSegmentAsync(DubSegmentSpec spec, int index, int outW, int outH,
@@ -76,12 +102,15 @@ public sealed class DubExportService
         var dubAudioInputIndex = 1;
         int? bgmInputIndex = null;
 
-        if (!spec.IsVoiceLocked && !string.IsNullOrEmpty(spec.CaptionText))
+        var burnText = CaptionRenderer.StripPunctuation(spec.CaptionText);
+        if (!spec.IsVoiceLocked && !string.IsNullOrEmpty(burnText))
         {
-            var canvasW = Math.Max(2, (int)(outW * 0.9));
+            // 画布宽=遮挡区宽（字幕落在遮挡带内换行）；字号=成片宽×全局比例（与 UI 预览同源）。对齐 mac。
+            var canvasW = Math.Max(120, maskPixel.Width);
+            var fontSize = (float)SubtitleFontSize.FontSize(outW, _settings.SubtitleFontRatio);
             var withBackdrop = mode != SubtitleMaskMode.Solid;
             var pngPath = Path.Combine(workDir, $"cap_{index:D3}.png");
-            var img = CaptionRenderer.RenderToFile(spec.CaptionText, canvasW, withBackdrop, pngPath);
+            var img = CaptionRenderer.RenderToFile(burnText, canvasW, withBackdrop, fontSize, pngPath);
             captionOrigin = CaptionLayout.OverlayOrigin(outW, outH, spec.MaskRect, img.PixelWidth, img.PixelHeight);
             extraInputs.Add(pngPath);
             captionInputIndex = extraInputs.Count; // 1-based
@@ -112,7 +141,8 @@ public sealed class DubExportService
         args.Add("-map"); args.Add(graph.VideoMapLabel);
         args.Add("-map"); args.Add(graph.AudioMapLabel);
         // 中间片编码参数必须完全一致，阶段二才能 -c copy。
-        args.AddRange(new[] { "-c:v", encoder, "-b:v", $"{bitrate}k", "-pix_fmt", "yuv420p", "-tag:v", "avc1" });
+        // -maxrate 封顶突发码率（对齐 mac，避免硬件编码码率飙高），上限取 2× 目标码率。
+        args.AddRange(new[] { "-c:v", encoder, "-b:v", $"{bitrate}k", "-maxrate", $"{bitrate * 2}k", "-pix_fmt", "yuv420p", "-tag:v", "avc1" });
         // -ac 2：所有中间片统一立体声（坑1：否则原声段立体声/配音段单声道，concat 后声道不符的段静音）。
         args.AddRange(new[] { "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", outputPath });
 

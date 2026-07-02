@@ -375,6 +375,46 @@ public partial class ImportView : UserControl, IProjectView
         }
     }
 
+    /// <summary>
+    /// 「AI 重识别」按钮：用阿里云 Paraformer 逐分镜重新识别台词（不重跑 whisper、不动分镜边界）。
+    /// 对齐 Mac reidentifyWholeVideo。与「重做」(本地 whisper) 一起构成「本地 + AI」台词重识别。
+    /// </summary>
+    private async void OnReidentifyAiClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || button.Tag is not VideoRow row) return;
+
+        Components.ToastService.Show("AI 重识别台词中…", Components.ToastStyle.Info);
+        button.IsEnabled = false;
+        var originalContent = button.Content;
+        button.Content = "识别中…";
+        try
+        {
+            var (ok, fail) = await _importVM.ReidentifyVideoAsync(row.Video.Id);
+            if (ok == 0 && fail == 0)
+            {
+                Components.ToastService.Show("未配置千问 API Key，无法 AI 重识别（设置里填写后重试）", Components.ToastStyle.Warning);
+            }
+            else if (fail == 0)
+            {
+                Components.ToastService.Show($"AI 重识别完成：{ok} 段台词已刷新", Components.ToastStyle.Success);
+            }
+            else
+            {
+                Components.ToastService.Show($"AI 重识别：{ok} 段成功 / {fail} 段失败（失败段保留原台词）", Components.ToastStyle.Warning);
+            }
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("AI 重识别失败：" + ExceptionTranslator.ToUserMessage(ex), Components.ToastStyle.Error);
+        }
+        finally
+        {
+            button.IsEnabled = true;
+            button.Content = originalContent;
+            _onChanged();
+        }
+    }
+
     private void OnShowInExplorer(object sender, RoutedEventArgs e)
     {
         if (sender is FrameworkElement { Tag: VideoRow row } && File.Exists(row.Video.LocalPath))
@@ -456,6 +496,14 @@ public partial class ImportView : UserControl, IProjectView
             IsAsrAbnormal ? Visibility.Visible : Visibility.Collapsed;
         public Visibility AsrAbnormalHintVisibility =>
             IsAsrAbnormal ? Visibility.Visible : Visibility.Collapsed;
+
+        /// <summary>
+        /// 「AI 重识别」（阿里 Paraformer 逐分镜刷新台词）入口：视频已完成且有分镜时常显。
+        /// 对齐 Mac reidentifyWholeVideo —— 与「重做」(本地 whisper) 一起构成台词「本地 + AI」双重识别。
+        /// </summary>
+        public Visibility AiReidentifyVisibility =>
+            Video.Status == VideoStatus.Completed && Video.Segments.Count > 0
+                ? Visibility.Visible : Visibility.Collapsed;
 
         // ===== 实时进度字段（处理中由 ImportViewModel.VideoProgressChanged 更新） =====
         [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]

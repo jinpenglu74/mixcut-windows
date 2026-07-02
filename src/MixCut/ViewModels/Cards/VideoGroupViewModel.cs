@@ -64,8 +64,17 @@ public sealed partial class VideoGroupViewModel : ObservableObject
 
     partial void OnIsDubBusyChanged(bool value) => OnPropertyChanged(nameof(IsNotDubBusy));
 
-    /// <summary>忙碌时的进度文案。</summary>
+    /// <summary>忙碌时的进度文案（带阶段序号，如「③ 改写台词 第 1/2 套…」）。</summary>
     [ObservableProperty] private string _dubProgress = string.Empty;
+
+    /// <summary>忙碌进度比例（0~1）。仅 DubProgressIndeterminate=false 时有意义。</summary>
+    [ObservableProperty] private double _dubProgressValue;
+
+    /// <summary>该阶段无法估算百分比（分离人声 / 克隆音色）→ UI 走无限滚动进度条。</summary>
+    [ObservableProperty] private bool _dubProgressIndeterminate = true;
+
+    /// <summary>「60%」百分比文案；无法估算时为空（UI 隐藏）。</summary>
+    [ObservableProperty] private string _dubPercentText = string.Empty;
 
     /// <summary>空闲时的状态文案，如「✓ 6 个变体」。</summary>
     [ObservableProperty] private string _dubStatusText = string.Empty;
@@ -79,7 +88,22 @@ public sealed partial class VideoGroupViewModel : ObservableObject
         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
             IsDubBusy = _dubbing.IsBusy(VideoId);
-            DubProgress = _dubbing.ProgressText(VideoId);
+            var info = _dubbing.ProgressInfo(VideoId);
+            DubProgress = info.Text;
+            if (info.Fraction >= 0)
+            {
+                // 可估算阶段：百分比进度条 + 「N%」
+                DubProgressIndeterminate = false;
+                DubProgressValue = info.Fraction;
+                DubPercentText = $"{(int)System.Math.Round(info.Fraction * 100)}%";
+            }
+            else
+            {
+                // 不可估算阶段（分离人声 / 克隆）：无限滚动条，不显示百分比
+                DubProgressIndeterminate = true;
+                DubProgressValue = 0;
+                DubPercentText = string.Empty;
+            }
             if (!IsDubBusy) _ = RefreshDubStatusAsync();
         });
     }

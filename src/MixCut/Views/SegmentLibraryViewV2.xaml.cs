@@ -18,17 +18,17 @@ namespace MixCut.Views;
 public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 {
     private readonly SegmentLibraryViewModel _vm;
-    private readonly Services.Export.BatchSegmentExportService _batchExport;
+    private readonly Services.Export.VariantBatchExportService _variantExport;
     private readonly Utilities.AppSettings _settings;
     private Project? _currentProject;
 
     public SegmentLibraryViewV2(
         SegmentLibraryViewModel vm,
-        Services.Export.BatchSegmentExportService batchExport,
+        Services.Export.VariantBatchExportService variantExport,
         Utilities.AppSettings settings)
     {
         _vm = vm;
-        _batchExport = batchExport;
+        _variantExport = variantExport;
         _settings = settings;
         InitializeComponent();
         DataContext = _vm;
@@ -98,6 +98,20 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 
     private void OnClearSearch(object sender, RoutedEventArgs e) => SearchBox.Text = string.Empty;
 
+    /// <summary>台词进入编辑态时自动聚焦 TextBox 并全选，用户直接改（对齐 mac textEditorFocused）。</summary>
+    private void TranscriptEditBox_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (sender is TextBox tb && tb.IsVisible)
+        {
+            // 布局/可见切换后再聚焦，否则 Focus 可能落空。
+            tb.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                tb.Focus();
+                tb.CaretIndex = tb.Text.Length;
+            }), System.Windows.Threading.DispatcherPriority.Input);
+        }
+    }
+
     private void OnViewModeChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;
@@ -152,8 +166,9 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     private void OnBatchExport(object sender, RoutedEventArgs e)
     {
         if (_vm.SelectedSegmentIds.Count == 0) return;
-        var dialog = new BatchExportDialog(
-            _batchExport, _settings, _vm.SelectedSegments, _vm.NumberFor)
+        // 展开成「原版 + 各已生成配音变体」任务（VM 内重载 dubs），对齐 mac 变体批量导出。
+        var jobs = _vm.BuildVariantExportJobs();
+        var dialog = new BatchExportDialog(_variantExport, _settings, jobs)
         {
             Owner = Window.GetWindow(this),
         };
@@ -400,8 +415,34 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 
     // ============ 卡片事件 + 懒加载播放器 ============
 
+    /// <summary>向上遍历视觉树，判断点击是否落在交互控件内（按钮/文本框/滚动条/遮挡框）。</summary>
+    private static bool IsInsideInteractive(DependencyObject? child)
+    {
+        while (child is not null)
+        {
+            if (child is System.Windows.Controls.Primitives.ButtonBase
+                or System.Windows.Controls.CheckBox
+                or System.Windows.Controls.TextBox
+                or System.Windows.Controls.Primitives.ScrollBar
+                or SegmentLibrary.SubtitleMaskOverlay)
+                return true;
+            child = System.Windows.Media.VisualTreeHelper.GetParent(child);
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 卡片点击（PreviewMouseLeftButtonDown 隧道阶段）→ 选中弹变体池。
+    /// 用 Preview 因为 hover 自动播放后 InlineVideoPlayer 会盖住缩略图并吞掉冒泡点击，
+    /// 隧道阶段 CardRoot 先收到，保证「hover 播放 + 点击选中」不冲突（对齐 mac tap 选中）。
+    /// 不 set Handled：让按钮/遮挡框/播放器内部控件继续收到点击。
+    /// </summary>
     private void OnCardClicked(object sender, MouseButtonEventArgs e)
     {
+        // 点在按钮/文本框/滚动条/遮挡框内 → 不选中，让那些控件自己处理。
+        if (IsInsideInteractive(e.OriginalSource as DependencyObject))
+            return;
+
         if (sender is FrameworkElement { Tag: SegmentCardViewModel card })
         {
             card.HandleCardClick();
@@ -414,40 +455,105 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     /// </summary>
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Components.InlineVideoPlayer, PropertyChangedEventHandler> _playerHandlers = new();
 
+    /// <summary>hover 自动播放定时器（对齐 mac：进卡 0.35s 触发，离卡取消）。每卡一个，存于 VideoHost。</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SegmentCardViewModel, System.Windows.Threading.DispatcherTimer> _hoverTimers = new();
+
     private void OnCardMouseEnter(object sender, MouseEventArgs e)
     {
-        // 全局点击播放：hover 不再创建播放器、不自动播，仅用于卡片悬停高亮。
-        if (sender is FrameworkElement { Tag: SegmentCardViewModel card }) card.IsHovering = true;
+        if (sender is not FrameworkElement { Tag: SegmentCardViewModel card } cardRoot) return;
+        card.IsHovering = true;
+        if (!card.IsVideoFileAvailable) return;
+        if (IsSelectionModeActive()) return; // 多选态不自动播
+
+        // 起 0.35s 定时器，到时自动播放（对齐 mac hoverTimer）。
+        CancelHoverTimer(card);
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(350),
+        };
+        timer.Tick += (_, _) =>
+        {
+            CancelHoverTimer(card);
+            if (card.IsHovering) StartHoverPlay(card, cardRoot);
+        };
+        _hoverTimers.AddOrUpdate(card, timer);
+        timer.Start();
     }
 
     private void OnCardMouseLeave(object sender, MouseEventArgs e)
     {
-        if (sender is FrameworkElement { Tag: SegmentCardViewModel card }) card.IsHovering = false;
+        if (sender is not FrameworkElement { Tag: SegmentCardViewModel card }) return;
+        card.IsHovering = false;
+        CancelHoverTimer(card);
+        // 离卡停止播放、还原缩略图。
+        StopHoverPlay(card);
+    }
+
+    private void CancelHoverTimer(SegmentCardViewModel card)
+    {
+        if (_hoverTimers.TryGetValue(card, out var t)) { t.Stop(); _hoverTimers.Remove(card); }
+    }
+
+    private bool IsSelectionModeActive() =>
+        DataContext is SegmentLibraryViewModel { IsSelectionMode: true };
+
+    /// <summary>停止某卡的 hover 播放并还原缩略图（离卡 / 被抢占时调用）。</summary>
+    private void StopHoverPlay(SegmentCardViewModel card)
+    {
+        var cardRoot = FindCardRootFor(card);
+        if (cardRoot is null) return;
+        var videoHost = FindChild<ContentControl>(cardRoot, "VideoHost");
+        if (videoHost?.Content is Components.InlineVideoPlayer player)
+        {
+            player.StopPlayback();
+        }
+    }
+
+    /// <summary>从可见卡片树里找到承载指定 card 的 CardRoot Border。</summary>
+    private FrameworkElement? FindCardRootFor(SegmentCardViewModel card)
+    {
+        foreach (var fe in EnumerateVisualChildren(this))
+        {
+            if (fe is FrameworkElement { Name: "CardRoot", Tag: SegmentCardViewModel c } cr && ReferenceEquals(c, card))
+                return cr;
+        }
+        return null;
+    }
+
+    private static IEnumerable<FrameworkElement> EnumerateVisualChildren(DependencyObject root)
+    {
+        var n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < n; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement fe) yield return fe;
+            foreach (var deep in EnumerateVisualChildren(child)) yield return deep;
+        }
     }
 
     /// <summary>
-    /// 卡片上始终显示的 ▶ 被点击：在该卡 VideoHost 里创建内联播放器并立即播放（全局点击播放，不依赖 hover）。
-    /// 播放时隐藏 ▶ 与时长角标（控制栏已显示时长）；播完 / 停止 / 被其他卡抢占由 player.Idle 还原。
+    /// hover 到时 / 微调请求 → 在该卡 VideoHost 里懒创建内联播放器并播放（对齐 mac hover 自动播放）。
+    /// 播完 / 停止 / 被其他卡抢占由 player.Idle 还原缩略图。
     /// </summary>
-    private void OnSegmentPlayClick(object sender, RoutedEventArgs e)
+    private void StartHoverPlay(SegmentCardViewModel card, FrameworkElement cardRoot)
     {
-        if (sender is not Button { Tag: SegmentCardViewModel card } playBtn) return;
         if (!card.IsVideoFileAvailable) return;
 
-        var thumbGrid = FindAncestorByName(playBtn, "ThumbGrid");
+        var thumbGrid = FindChild<Grid>(cardRoot, "ThumbGrid");
         if (thumbGrid is null) return;
         var videoHost = FindChild<ContentControl>(thumbGrid, "VideoHost");
         if (videoHost is null) return;
         var badge = FindChild<Border>(thumbGrid, "CardDurationBadge");
+        var playBtn = FindChild<Grid>(thumbGrid, "PlayOverlay");
 
-        // 已经在播这张卡 → 忽略重复点击，避免重复 Open 抖动。
+        // 已经在播这张卡 → 忽略，避免重复 Open 抖动。
         if (videoHost.Content is Components.InlineVideoPlayer { IsPlaying: true })
         {
             return;
         }
 
         Serilog.Log.Information(
-            "[SegPlayDiag] 点击播放 seq={Seq} startFrame={SF} videoHostHash={H}",
+            "[SegPlayDiag] hover 播放 seq={Seq} startFrame={SF} videoHostHash={H}",
             card.SequenceNumber, card.Segment.StartFrame, videoHost.GetHashCode());
 
         if (videoHost.Content is not Components.InlineVideoPlayer player)
@@ -488,7 +594,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
                     {
                         TeardownHoverPlayer(videoHost, player, card);
                     }
-                    playBtn.Visibility = Visibility.Visible;
+                    if (playBtn is not null) playBtn.Visibility = Visibility.Visible;
                     if (badge is not null) badge.Visibility = Visibility.Visible;
                 }), System.Windows.Threading.DispatcherPriority.Background);
             };
@@ -497,7 +603,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
 
         // 隐藏 ▶ 与时长角标（避免与控制栏时长重叠），开始播放。
-        playBtn.Visibility = Visibility.Collapsed;
+        if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
         if (badge is not null) badge.Visibility = Visibility.Collapsed;
         // 用已布局好的 videoHost 尺寸预置解码目标（竖屏框），免去昂贵的同步 UpdateLayout（数十卡 ~150-200ms）。
         // 刚塞进去的 player 自身 ActualWidth=0，但 videoHost 早已布局、尺寸确定。

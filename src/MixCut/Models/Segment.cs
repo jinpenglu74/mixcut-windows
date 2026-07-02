@@ -68,6 +68,12 @@ public class Segment
     /// <summary>遮挡框归一化坐标 JSON（经 <see cref="MaskRect"/> 读写）。</summary>
     public string? MaskRectJson { get; set; }
 
+    /// <summary>
+    /// 本分镜自己的克隆音色 id（每个分镜单独克隆，配音跟本段原声一致 —— 广告常见"开头带货钩子换人"，
+    /// 若整片只取前 6s 克隆会导致后段主播被串成别人/别的性别）。空 = 尚未逐段克隆。
+    /// </summary>
+    public string? ClonedVoiceId { get; set; }
+
     // ---- 导航属性 ----
 
     public Guid? VideoId { get; set; }
@@ -130,9 +136,14 @@ public class Segment
     [NotMapped]
     public SubtitleMaskRect MaskRect
     {
-        get => string.IsNullOrWhiteSpace(MaskRectJson)
-            ? SubtitleMaskRect.Default
-            : System.Text.Json.JsonSerializer.Deserialize<SubtitleMaskRect>(MaskRectJson!);
+        get
+        {
+            var r = string.IsNullOrWhiteSpace(MaskRectJson)
+                ? SubtitleMaskRect.Default
+                : System.Text.Json.JsonSerializer.Deserialize<SubtitleMaskRect>(MaskRectJson!);
+            // 宽度始终顶满视频（X=0, Width=1），Y/Height 可编辑。
+            return new SubtitleMaskRect(0.0, r.Y, 1.0, r.Height);
+        }
         set => MaskRectJson = System.Text.Json.JsonSerializer.Serialize(value);
     }
 
@@ -146,7 +157,8 @@ public class Segment
     {
         get
         {
-            var cloned = Video?.ClonedVoiceId;
+            // 逐段克隆后，本段"正牌"音色优先取本分镜自己的 ClonedVoiceId；老库/回退时退回视频级。
+            var cloned = string.IsNullOrEmpty(ClonedVoiceId) ? Video?.ClonedVoiceId : ClonedVoiceId;
             var byIndex = new Dictionary<int, SegmentDub>();
             foreach (var d in SegmentDubs)
             {

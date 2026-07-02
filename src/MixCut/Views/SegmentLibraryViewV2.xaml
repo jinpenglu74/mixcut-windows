@@ -6,13 +6,16 @@
              xmlns:cards="clr-namespace:MixCut.ViewModels.Cards"
              xmlns:comp="clr-namespace:MixCut.Views.Components"
              xmlns:v="clr-namespace:MixCut.Views"
+             xmlns:sl="clr-namespace:MixCut.Views.SegmentLibrary"
+             xmlns:vm="clr-namespace:MixCut.ViewModels"
              xmlns:vwp="clr-namespace:WpfToolkit.Controls;assembly=VirtualizingWrapPanel"
              xmlns:sys="clr-namespace:System;assembly=mscorlib"
              mc:Ignorable="d"
              Background="{StaticResource BgPrimaryBrush}">
     <UserControl.Resources>
-        <sys:Double x:Key="SegmentCardWidth">228</sys:Double>
-        <sys:Double x:Key="SegmentCardHeight">650</sys:Double>
+        <!-- 对齐 mac：卡片改横向双栏（左缩略图+控件 | 右台词），故变宽变矮。 -->
+        <sys:Double x:Key="SegmentCardWidth">474</sys:Double>
+        <sys:Double x:Key="SegmentCardHeight">660</sys:Double>
         <!-- 卡片内满宽 9:16，避免视频缩在大面积空白中。 -->
         <sys:Double x:Key="SegmentCardThumbWidth">210</sys:Double>
         <sys:Double x:Key="SegmentCardThumbHeight">373</sys:Double>
@@ -220,21 +223,19 @@
         <Border DockPanel.Dock="Top" Height="1"
                 Background="{StaticResource BorderSubtleBrush}" Margin="0,4,0,8" />
 
-        <!-- ========== 主体：VirtualizingWrapPanel 真虚拟化（视口外不实例化） ==========
-             2 列：col0=配音检视器(Auto，隐藏时 0 宽，drawer 在左侧因右对齐内容在本 content 区会被推出屏幕外)，
-             col1=分镜区(*)。 -->
-        <Grid>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-            </Grid.ColumnDefinitions>
+        <!-- ========== 主体 ==========
+             DockPanel：检视器 Dock=Right 先占 340px（隐藏时 0 宽），分镜区填剩余宽度。
+             用 DockPanel 而非 Grid：确保右侧 drawer 占位后分镜区被约束在剩余宽度内换行，
+             根治「WrapPanel 无限宽测量把右列挤出屏幕」的历史怪象。 -->
+        <DockPanel LastChildFill="True">
 
-            <!-- 配音变体检视器（v0.5.0）：单击分镜后左侧 drawer（浅色 UserControl） -->
-            <v:DubVariantInspectorView Grid.Column="0" VerticalAlignment="Stretch" Width="340" Margin="0,0,12,0"
+            <!-- 配音变体检视器（v0.5.0）：单击分镜后右侧 drawer（浅色 UserControl，对齐 mac） -->
+            <v:DubVariantInspectorView DockPanel.Dock="Right" VerticalAlignment="Stretch" Width="340" Margin="12,0,0,0"
                                        DataContext="{Binding DubInspector}"
                                        Visibility="{Binding IsVisible, Converter={StaticResource BoolToVisibility}, FallbackValue=Collapsed}" />
 
-            <StackPanel x:Name="EmptyState" Grid.Column="1" Visibility="Collapsed"
+            <StackPanel x:Name="EmptyState" Visibility="Collapsed"
+                        DockPanel.Dock="Top"
                         HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="🎬" FontSize="40"
                            Foreground="{StaticResource TextDisabledBrush}"
@@ -244,8 +245,8 @@
                            HorizontalAlignment="Center" Margin="0,8,0,4" />
             </StackPanel>
 
-            <!-- 外层：按视频分组（对齐 Mac 版）。每组 = 视频 header + 该组分镜 WrapPanel -->
-            <ScrollViewer x:Name="GroupsScroller" Grid.Column="1"
+            <!-- 外层：按视频分组（对齐 Mac 版）。每组 = 视频 header + 该组分镜 WrapPanel（LastChildFill 填剩余） -->
+            <ScrollViewer x:Name="GroupsScroller"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
                 <ItemsControl x:Name="GroupsHost" ItemsSource="{Binding Groups}">
@@ -301,12 +302,25 @@
                                                         ToolTip="增加变体数（每分镜产出几套改写版）" Command="{Binding IncVariantCommand}" />
                                             </StackPanel>
                                         </Border>
-                                        <!-- 忙碌进度 -->
+                                        <!-- 忙碌进度：阶段文案 + 进度条 + 百分比。
+                                             可估算阶段（改写/合成）→ 百分比条 + 「N%」；
+                                             不可估算阶段（分离人声/克隆）→ 无限滚动条（IsIndeterminate）传达「在动」。
+                                             对齐 ImportView 的处理中进度样式（§商用丝滑标准 §1 进度反馈）。 -->
                                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center"
                                                     Visibility="{Binding IsDubBusy, Converter={StaticResource BoolToVisibility}}">
-                                            <TextBlock Text="⏳" FontSize="12" Margin="0,0,4,0" VerticalAlignment="Center" />
-                                            <TextBlock Text="{Binding DubProgress}" FontSize="11"
-                                                       Foreground="{StaticResource AccentBlueBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding DubProgress}" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource AccentBlueBrush}"
+                                                       VerticalAlignment="Center" Margin="0,0,8,0" />
+                                            <ProgressBar Width="120" Height="5" VerticalAlignment="Center"
+                                                         Minimum="0" Maximum="1"
+                                                         Value="{Binding DubProgressValue, Mode=OneWay}"
+                                                         IsIndeterminate="{Binding DubProgressIndeterminate}"
+                                                         Foreground="{StaticResource AccentBlueBrush}"
+                                                         Background="{StaticResource BgSubtleBrush}"
+                                                         BorderThickness="0" />
+                                            <TextBlock Text="{Binding DubPercentText}" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center" Margin="6,0,0,0" MinWidth="30" />
                                         </StackPanel>
                                         <!-- 空闲状态「✓ N 个变体」 -->
                                         <TextBlock Text="{Binding DubStatusText}" FontSize="11" FontWeight="SemiBold"
@@ -339,7 +353,7 @@
                                 ClipToBounds="True"
                                 Tag="{Binding}"
                                 RenderTransformOrigin="0.5,0.5"
-                                MouseLeftButtonDown="OnCardClicked"
+                                PreviewMouseLeftButtonDown="OnCardClicked"
                                 MouseEnter="OnCardMouseEnter"
                                 MouseLeave="OnCardMouseLeave">
                             <!-- P0-6：hover 时卡片 subtle 缩放浮起（纯 RenderTransform，不碰画刷，零冻结崩溃风险） -->
@@ -398,14 +412,25 @@
                                 </Style>
                             </Border.Style>
 
+                            <!-- 对齐 mac：横向双栏 —— 左列(缩略图+标签+配音控件+边界) | 分隔线 | 右列台词（常显·大而可读·可编辑/重识别）。
+                                 左列各控件默认落在 Column 0；台词跨全部行占 Column 2；边界靠弹性行推到底。 -->
                             <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="210" />   <!-- 左列（缩略图宽） -->
+                                    <ColumnDefinition Width="Auto" />  <!-- 分隔线 -->
+                                    <ColumnDefinition Width="*" />     <!-- 右列：台词 -->
+                                </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />  <!-- 缩略图 -->
                                     <RowDefinition Height="Auto" />  <!-- 标签 -->
                                     <RowDefinition Height="Auto" />  <!-- 位置/质量 -->
-                                    <RowDefinition Height="*" />     <!-- 台词（占剩余，超出滚动） -->
+                                    <RowDefinition Height="Auto" />  <!-- 字幕处理（P3） -->
                                     <RowDefinition Height="Auto" />  <!-- 边界微调 -->
+                                    <RowDefinition Height="*" />     <!-- 弹性占位（底部）：吸收余量，台词跨全高 -->
                                 </Grid.RowDefinitions>
+                                <!-- 左右分隔线（跨全高） -->
+                                <Rectangle Grid.Column="1" Grid.RowSpan="6" Width="1" Margin="8,4"
+                                           Fill="{StaticResource BorderSubtleBrush}" />
                                 <!-- 缩略图区 -->
                                 <Border Grid.Row="0"
                                         Width="{StaticResource SegmentCardThumbWidth}"
@@ -477,26 +502,26 @@
                                                        Visibility="{Binding IsChecked, Converter={StaticResource BoolToVisibility}}" />
                                         </Border>
 
-                                        <!-- 全局点击播放：整张缩略图都是点击区（点哪都能播，不用瞄准小 ▶），
-                                             居中显示 ▶ 提示。播放时由 OnSegmentPlayClick 隐藏、播完/停止由 Idle 还原。
-                                             多选模式隐藏，让点击落到卡片做选择。自定义模板=纯透明背景，避免默认按钮 chrome。 -->
-                                        <Button x:Name="PlayOverlay" Click="OnSegmentPlayClick" Tag="{Binding}"
-                                                Cursor="Hand"
-                                                Visibility="{Binding IsSelectionMode, Converter={StaticResource InverseBoolToVisibility}}">
-                                            <Button.Template>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border Background="#01000000">
-                                                        <ContentPresenter HorizontalAlignment="Center"
-                                                                          VerticalAlignment="Center" />
-                                                    </Border>
-                                                </ControlTemplate>
-                                            </Button.Template>
-                                            <Border Background="#90000000" CornerRadius="999" Width="46" Height="46">
+                                        <!-- hover 自动播放（对齐 mac）：进卡 0.35s 起播，离卡停。▶ 仅作静态提示，
+                                             不接收点击（IsHitTestVisible=False），让点击落到卡片 → 选中弹变体池。
+                                             播放时由 StartHoverPlay 隐藏、播完/停止由 Idle 还原。多选模式隐藏。
+                                             x:Name=PlayOverlay 供后台代码定位显隐。 -->
+                                        <Grid x:Name="PlayOverlay" IsHitTestVisible="False"
+                                              Visibility="{Binding IsSelectionMode, Converter={StaticResource InverseBoolToVisibility}}">
+                                            <Border Background="#90000000" CornerRadius="999" Width="46" Height="46"
+                                                    HorizontalAlignment="Center" VerticalAlignment="Center">
                                                 <TextBlock Text="▶" Foreground="White" FontSize="16"
                                                            HorizontalAlignment="Center" VerticalAlignment="Center"
                                                            Margin="3,0,0,0" />
                                             </Border>
-                                        </Button>
+                                        </Grid>
+
+                                        <!-- P3：字幕遮挡框 + 字号预览（叠在缩略图上）。未保留原声即显示（三种字幕处理都要预览字号）；
+                                             遮挡蓝框仅「模糊虚化 / 纯色遮挡」时由 ShowMaskBox 显示。 -->
+                                        <sl:SubtitleMaskOverlay Rect="{Binding MaskRect, Mode=TwoWay}"
+                                                                CommitCommand="{Binding CommitMaskCommand}"
+                                                                ShowMaskBox="{Binding NeedsMaskEditor}"
+                                                                Visibility="{Binding SubtitlePreviewVisible, Converter={StaticResource BoolToVisibility}}" />
                                     </Grid>
                                 </Border>
 
@@ -535,16 +560,166 @@
                                     </Border>
                                 </WrapPanel>
 
-                                <!-- 台词块（占 Row="*" 剩余空间，超出自动滚动） -->
-                                <Border Grid.Row="3"
+                                <!-- 字幕处理（P3）：保留原声 + 三胶囊 + 遮挡区应用 -->
+                                <StackPanel Grid.Row="3" Margin="0,6,0,0">
+                                    <!-- 保留原声开关 -->
+                                    <CheckBox IsChecked="{Binding IsVoiceLocked, Mode=OneWay}" Command="{Binding ToggleVoiceLockCommand}"
+                                              Cursor="Hand" Content="🔒 保留原声"
+                                              FontSize="10" Foreground="{StaticResource TextSecondaryBrush}" />
+
+                                    <!-- 字幕处理（未锁定才显示） -->
+                                    <StackPanel Margin="0,4,0,0"
+                                                Visibility="{Binding IsVoiceLocked, Converter={StaticResource InverseBoolToVisibility}}">
+                                        <TextBlock Text="字幕处理" FontSize="9" FontWeight="Medium"
+                                                   Foreground="{StaticResource TextTertiaryBrush}" Margin="0,0,0,3" />
+                                        <WrapPanel>
+                                            <Button Content="直接烧录" Command="{Binding SetTreatmentCommand}" CommandParameter="Direct"
+                                                    ToolTip="不处理背景，直接把新字幕烧上去"
+                                                    Padding="7,3" FontSize="10" Margin="0,0,4,4" Cursor="Hand"
+                                                    BorderThickness="0">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <!-- 默认色必须放 Style Setter，不能写成 Button 本地属性：本地值优先级高于 Style 触发器，
+                                                             一旦写在 Button 上，下面选中态 DataTrigger 的 Background/Foreground 会被永久覆盖→胶囊永不高亮。 -->
+                                                        <Setter Property="Background" Value="{StaticResource BgQuaternaryBrush}" />
+                                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border Background="{TemplateBinding Background}" CornerRadius="999"
+                                                                            Padding="{TemplateBinding Padding}">
+                                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                    </Border>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding SubtitleTreatment}" Value="Direct">
+                                                                <Setter Property="Background" Value="{StaticResource AccentBlueBrush}" />
+                                                                <Setter Property="Foreground" Value="White" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <Button Content="模糊虚化" Command="{Binding SetTreatmentCommand}" CommandParameter="Blur"
+                                                    ToolTip="把字幕区域糊掉再烧（不管有没有旧字幕都可用）"
+                                                    Padding="7,3" FontSize="10" Margin="0,0,4,4" Cursor="Hand"
+                                                    BorderThickness="0">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Background" Value="{StaticResource BgQuaternaryBrush}" />
+                                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border Background="{TemplateBinding Background}" CornerRadius="999"
+                                                                            Padding="{TemplateBinding Padding}">
+                                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                    </Border>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding SubtitleTreatment}" Value="Blur">
+                                                                <Setter Property="Background" Value="{StaticResource AccentBlueBrush}" />
+                                                                <Setter Property="Foreground" Value="White" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <Button Content="纯色遮挡" Command="{Binding SetTreatmentCommand}" CommandParameter="Solid"
+                                                    ToolTip="深色条盖住该区域再烧"
+                                                    Padding="7,3" FontSize="10" Margin="0,0,4,4" Cursor="Hand"
+                                                    BorderThickness="0">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Background" Value="{StaticResource BgQuaternaryBrush}" />
+                                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border Background="{TemplateBinding Background}" CornerRadius="999"
+                                                                            Padding="{TemplateBinding Padding}">
+                                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                    </Border>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding SubtitleTreatment}" Value="Solid">
+                                                                <Setter Property="Background" Value="{StaticResource AccentBlueBrush}" />
+                                                                <Setter Property="Foreground" Value="White" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </WrapPanel>
+                                        <!-- 遮挡区应用到所有分镜（模糊/纯色才显示） -->
+                                        <Button Content="⊞ 遮挡区应用到所有分镜" Command="{Binding ApplyMaskToAllCommand}"
+                                                Visibility="{Binding NeedsMaskEditor, Converter={StaticResource BoolToVisibility}}"
+                                                HorizontalAlignment="Left" Margin="0,4,0,0" Padding="0" FontSize="10"
+                                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                Foreground="{StaticResource AccentBlueBrush}"
+                                                ToolTip="把本分镜的字幕处理方式与遮挡框复制到同一视频的其它分镜" />
+
+                                        <!-- 字幕字号（全局统一）：拖动时上方画面里的示例字幕实时变大变小，可与原字幕比大小。
+                                             绑定全局共享 SubtitleFontState（所有卡片 + 导出烧录共用一份），对齐 mac 字号滑条。 -->
+                                        <StackPanel Margin="0,8,0,0">
+                                            <DockPanel LastChildFill="False" Margin="0,0,0,2">
+                                                <TextBlock DockPanel.Dock="Left" Text="字幕字号" FontSize="9" FontWeight="Medium"
+                                                           Foreground="{StaticResource TextTertiaryBrush}" />
+                                                <TextBlock DockPanel.Dock="Right" FontSize="9"
+                                                           Foreground="{StaticResource TextTertiaryBrush}"
+                                                           Text="{Binding PercentText, Source={x:Static vm:SubtitleFontState.Shared}}" />
+                                            </DockPanel>
+                                            <!-- Min/Max = SubtitleFontSize.MinRatio/MaxRatio (0.030~0.085) -->
+                                            <Slider Minimum="0.030" Maximum="0.085" SmallChange="0.002" LargeChange="0.005"
+                                                    Value="{Binding Ratio, Source={x:Static vm:SubtitleFontState.Shared}, Mode=TwoWay}"
+                                                    ToolTip="字幕字号全片统一。拖动时上方画面里的示例字幕会实时变化，可与原视频字幕对比大小。" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <!-- 台词块（右列，跨全高常显；对齐 mac：大而可读，hover 显 ✏ 编辑 / ↻ 重识别） -->
+                                <Border Grid.Column="2" Grid.RowSpan="6"
                                         Background="{StaticResource BgSubtleBrush}"
                                         BorderBrush="{StaticResource BorderSubtleBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="6" Padding="7,5" Margin="0,6,0,0">
-                                    <Grid>
-                                        <!-- 有台词：标题行 + ScrollViewer 自动占剩余 -->
-                                        <DockPanel Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVisibility}}">
-                                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,3">
+                                        CornerRadius="6" Padding="10,8" Margin="0">
+                                    <Border.Resources>
+                                        <!-- 台词区图标按钮统一样式（✏ ↻ ✓ ✕）：透明底、圆角、hover 高亮 -->
+                                        <Style x:Key="TranscriptIconBtn" TargetType="Button">
+                                            <Setter Property="Width" Value="18" />
+                                            <Setter Property="Height" Value="18" />
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="Margin" Value="4,0,0,0" />
+                                            <Setter Property="FontSize" Value="10" />
+                                            <Setter Property="Cursor" Value="Hand" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="Foreground" Value="{StaticResource AccentBlueBrush}" />
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}" CornerRadius="4">
+                                                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                        </Border>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="{StaticResource AccentBlueLightBrush}" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Border.Resources>
+                                    <!-- 标题行常显（含 ✏/↻ 操作），下方 body 三态：编辑 / 有词 / 无词 -->
+                                    <DockPanel>
+                                        <Grid DockPanel.Dock="Top" Margin="0,0,0,3">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                                                 <TextBlock Text="💬" FontSize="9"
                                                            VerticalAlignment="Center" Margin="0,0,4,0" />
                                                 <TextBlock Text="台词" FontSize="10" FontWeight="SemiBold"
@@ -557,26 +732,66 @@
                                                     <Run Text=" · " /><Run Text="{Binding TranscriptCharCount, Mode=OneWay}" /><Run Text="字" />
                                                 </TextBlock>
                                             </StackPanel>
+                                            <!-- 非编辑态：✏ 编辑 + ↻ 重识别（hover/选中显示；空台词也显示，可直接输入/重识别） -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                        Visibility="{Binding TranscriptActionsVisible, Converter={StaticResource BoolToVisibility}}">
+                                                <Button Content="✏" Command="{Binding BeginEditTextCommand}"
+                                                        Style="{StaticResource TranscriptIconBtn}" ToolTip="编辑台词" />
+                                                <Button Content="↻" Command="{Binding ReRecognizeCommand}"
+                                                        Style="{StaticResource TranscriptIconBtn}"
+                                                        ToolTip="用阿里云 ASR 重新识别该分镜台词（替换原台词）" />
+                                            </StackPanel>
+                                            <!-- 编辑态：✓ 保存 + ✕ 取消 -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                        Visibility="{Binding IsEditingText, Converter={StaticResource BoolToVisibility}}">
+                                                <Button Content="✓" Command="{Binding SaveTextCommand}"
+                                                        Style="{StaticResource TranscriptIconBtn}"
+                                                        Foreground="{StaticResource SuccessGreenBrush}" ToolTip="保存（Ctrl+Enter）" />
+                                                <Button Content="✕" Command="{Binding CancelEditTextCommand}"
+                                                        Style="{StaticResource TranscriptIconBtn}"
+                                                        Foreground="{StaticResource TextTertiaryBrush}" ToolTip="取消（Esc）" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid>
+                                            <!-- 编辑态：TextBox（双向绑 DraftText，Ctrl+Enter 保存 / Esc 取消） -->
+                                            <TextBox Visibility="{Binding IsEditingText, Converter={StaticResource BoolToVisibility}}"
+                                                     Text="{Binding DraftText, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="True" TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     MinHeight="48" MaxHeight="160"
+                                                     FontSize="11"
+                                                     IsVisibleChanged="TranscriptEditBox_IsVisibleChanged"
+                                                     Background="{StaticResource BgPrimaryBrush}"
+                                                     Foreground="{StaticResource TextPrimaryBrush}"
+                                                     BorderBrush="{StaticResource AccentBlueBrush}" BorderThickness="1"
+                                                     Padding="5,3">
+                                                <TextBox.InputBindings>
+                                                    <KeyBinding Modifiers="Control" Key="Return" Command="{Binding SaveTextCommand}" />
+                                                    <KeyBinding Key="Escape" Command="{Binding CancelEditTextCommand}" />
+                                                </TextBox.InputBindings>
+                                            </TextBox>
+                                            <!-- 有台词只读态 -->
                                             <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                                          HorizontalScrollBarVisibility="Disabled">
+                                                          HorizontalScrollBarVisibility="Disabled"
+                                                          Visibility="{Binding TranscriptReadonlyVisible, Converter={StaticResource BoolToVisibility}}">
                                                 <TextBlock Text="{Binding TranscriptText}"
-                                                           FontSize="11" TextWrapping="Wrap"
-                                                           LineHeight="16"
-                                                           Foreground="{StaticResource TextSecondaryBrush}" />
+                                                           FontSize="12.5" TextWrapping="Wrap"
+                                                           LineHeight="20"
+                                                           Foreground="{StaticResource TextPrimaryBrush}" />
                                             </ScrollViewer>
-                                        </DockPanel>
-                                        <!-- 无台词：居中提示 -->
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
-                                                    VerticalAlignment="Center"
-                                                    Visibility="{Binding HasTranscript, Converter={StaticResource BoolToVisibilityInverse}}">
-                                            <TextBlock Text="🔇" FontSize="11"
-                                                       Foreground="{StaticResource TextQuinaryBrush}"
-                                                       Margin="0,0,4,0" />
-                                            <TextBlock Text="暂无台词" FontSize="10"
-                                                       Foreground="{StaticResource TextQuaternaryBrush}"
-                                                       VerticalAlignment="Center" />
-                                        </StackPanel>
-                                    </Grid>
+                                            <!-- 无台词占位 -->
+                                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center"
+                                                        Visibility="{Binding TranscriptEmptyVisible, Converter={StaticResource BoolToVisibility}}">
+                                                <TextBlock Text="🔇" FontSize="11"
+                                                           Foreground="{StaticResource TextQuinaryBrush}"
+                                                           Margin="0,0,4,0" />
+                                                <TextBlock Text="暂无台词，点 ✏ 手写或 ↻ 重识别" FontSize="10"
+                                                           Foreground="{StaticResource TextQuaternaryBrush}"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </DockPanel>
                                 </Border>
 
                                 <!-- 商用级帧边界面板：时间码清楚、按钮可点、最后一帧可核对。 -->
@@ -694,6 +909,6 @@
                 </ItemsControl>
             </ScrollViewer>
 
-        </Grid>
+        </DockPanel>
     </DockPanel>
 </UserControl>

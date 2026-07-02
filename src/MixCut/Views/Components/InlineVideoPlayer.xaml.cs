@@ -189,6 +189,17 @@ public partial class InlineVideoPlayer : UserControl
         }
     }
 
+    /// <summary>
+    /// 配音换声预览（Point 4 方案预览换声）：设置该分镜选中变体的克隆配音 + 分离背景乐路径。
+    /// 设置后播放时 mute 视频原声、改播「克隆配音 + BGM(按分镜起点 seek)」；两者传 null 恢复原声。
+    /// 须在 <see cref="SetSegment(string,string?,int,int,double)"/> 之后调用（依赖已知分镜起点做 BGM seek）。
+    /// 对齐 Mac SegmentInlinePlayer：选中变体 → dubAudioPath 非空 → 换声。
+    /// </summary>
+    public void SetDubAudio(string? dubAudioPath, string? bgmAudioPath)
+    {
+        Player.SetAudioOverride(dubAudioPath, bgmAudioPath);
+    }
+
     private static BitmapImage? LoadThumb(string? path)
     {
         if (string.IsNullOrEmpty(path) || !File.Exists(path))
@@ -307,6 +318,9 @@ public partial class InlineVideoPlayer : UserControl
     }
 
     private void OnStopClick(object sender, RoutedEventArgs e) => Stop();
+
+    /// <summary>外部（宿主卡片离开 hover）请求停止播放并还原缩略图。</summary>
+    public void StopPlayback() => Stop();
 
     private void Stop()
     {

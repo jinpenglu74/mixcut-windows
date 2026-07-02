@@ -224,49 +224,65 @@
 
                                     <!-- 右侧台词面板（可滚动）-->
                                     <DockPanel Grid.Column="3" Margin="10,10,10,10">
-                                        <!-- 标题栏 -->
-                                        <Grid DockPanel.Dock="Top" Margin="0,0,0,4">
+                                        <DockPanel.Resources>
+                                            <!-- 台词面板仅 195px 宽：动作一律做成紧凑圆角图标按钮，否则文字会挤成一团/相互遮挡。
+                                                 对齐 Mac —— 复制/重识别都用图标。 -->
+                                            <Style x:Key="ImportTranscriptIconBtn" TargetType="Button">
+                                                <Setter Property="Width" Value="24" />
+                                                <Setter Property="Height" Value="20" />
+                                                <Setter Property="Margin" Value="4,0,0,0" />
+                                                <Setter Property="Padding" Value="0" />
+                                                <Setter Property="FontSize" Value="11" />
+                                                <Setter Property="FontWeight" Value="Bold" />
+                                                <Setter Property="Cursor" Value="Hand" />
+                                                <Setter Property="Background" Value="#F0F0F3" />
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border Background="{TemplateBinding Background}" CornerRadius="5">
+                                                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                            </Border>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Opacity" Value="0.82" />
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </DockPanel.Resources>
+                                        <!-- 标题栏：左「🎙 台词·N字」，右侧一排紧凑图标（复制 / AI 重识别 / 重做）。 -->
+                                        <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
-                                            <StackPanel Orientation="Horizontal">
-                                                <TextBlock Text="🎙" FontSize="10" Margin="0,0,4,0" />
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <TextBlock Text="🎙" FontSize="10" Margin="0,0,4,0" VerticalAlignment="Center" />
                                                 <TextBlock Text="台词" FontSize="10" FontWeight="SemiBold"
-                                                           Foreground="#888" />
+                                                           Foreground="#888" VerticalAlignment="Center" />
                                                 <TextBlock Text="{Binding TranscriptCharText}"
                                                            FontSize="9" Foreground="#AAA"
                                                            FontFamily="Consolas, monospace"
-                                                           VerticalAlignment="Bottom" Margin="6,0,0,0" />
-                                                <!-- 一键复制全部台词（带起止时间，ASR 格式）。仅在有台词时显示。 -->
-                                                <Button Visibility="{Binding SentencesVisibility}"
-                                                        Tag="{Binding}"
-                                                        Click="OnCopyAllLyrics"
-                                                        Background="Transparent" BorderThickness="0"
-                                                        Padding="4,0" Margin="6,0,0,0" FontSize="9"
-                                                        Foreground="#1D6BE5" Cursor="Hand"
-                                                        VerticalAlignment="Bottom"
-                                                        ToolTip="复制全部台词（带起止时间，可粘贴到文档/表格）">
-                                                    <TextBlock Text="📋 复制" />
-                                                </Button>
+                                                           VerticalAlignment="Center" Margin="5,1,0,0" />
                                             </StackPanel>
-                                            <!-- ASR 异常时显示「重做」按钮（对齐 Mac retryASR 入口） -->
-                                            <Button Grid.Column="1"
-                                                    Visibility="{Binding AsrRedoVisibility}"
-                                                    Tag="{Binding}"
-                                                    Click="OnRedoAsrClick"
-                                                    Background="#FFF1DC"
-                                                    Foreground="#C06F00"
-                                                    BorderThickness="0"
-                                                    Padding="6,2" FontSize="10"
-                                                    FontWeight="SemiBold"
-                                                    Cursor="Hand"
-                                                    ToolTip="ASR 分句较粗，点击重新识别">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <TextBlock Text="↻ " FontWeight="Bold" />
-                                                    <TextBlock Text="重做" />
-                                                </StackPanel>
-                                            </Button>
+                                            <!-- 右侧动作图标：复制(蓝) / AI 重识别(阿里·紫) / 重做(本地 whisper·橙，仅分句异常)。
+                                                 对齐 Mac 台词面板「本地 + AI」双重识别入口。 -->
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Button Visibility="{Binding SentencesVisibility}" Tag="{Binding}" Click="OnCopyAllLyrics"
+                                                        Style="{StaticResource ImportTranscriptIconBtn}"
+                                                        Foreground="#1D6BE5" Content="📋"
+                                                        ToolTip="复制全部台词（带起止时间，可粘贴到文档/表格）" />
+                                                <Button Visibility="{Binding AiReidentifyVisibility}" Tag="{Binding}" Click="OnReidentifyAiClick"
+                                                        Style="{StaticResource ImportTranscriptIconBtn}"
+                                                        Background="#EDE6FA" Foreground="#6A3FB5" Content="↻"
+                                                        ToolTip="AI 重识别台词：用阿里云 ASR 逐分镜重新识别，刷新台词（不重跑 whisper、不动分镜边界）" />
+                                                <Button Visibility="{Binding AsrRedoVisibility}" Tag="{Binding}" Click="OnRedoAsrClick"
+                                                        Style="{StaticResource ImportTranscriptIconBtn}"
+                                                        Background="#FCEBD2" Foreground="#C06F00" Content="↺"
+                                                        ToolTip="ASR 分句较粗，点击重跑本地 whisper 重新识别（本地识别）" />
+                                            </StackPanel>
                                         </Grid>
 
                                         <!-- ASR 异常提示条 -->

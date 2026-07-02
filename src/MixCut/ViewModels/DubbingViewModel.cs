@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using MixCut.Data;
 using MixCut.Models;
 using MixCut.Services.Dubbing;
+using MixCut.Services.VideoProcessing;
 using MixCut.Utilities;
 
 namespace MixCut.ViewModels;
@@ -26,6 +27,8 @@ public sealed partial class DubbingViewModel : ObservableObject
     private readonly CloneTtsClient _tts;
     private readonly DubAudioFinalizer _finalizer;
     private readonly ScriptRewriteService _rewriteService;
+    private readonly SegmentReRecognizer _reRecognizer;
+    private readonly FFmpegRunner _ffmpeg;
     private readonly AppSettings _settings;
     private readonly ILogger<DubbingViewModel> _logger;
 
@@ -36,6 +39,8 @@ public sealed partial class DubbingViewModel : ObservableObject
         CloneTtsClient tts,
         DubAudioFinalizer finalizer,
         ScriptRewriteService rewriteService,
+        SegmentReRecognizer reRecognizer,
+        FFmpegRunner ffmpeg,
         AppSettings settings,
         ILogger<DubbingViewModel> logger)
     {
@@ -45,6 +50,8 @@ public sealed partial class DubbingViewModel : ObservableObject
         _tts = tts;
         _finalizer = finalizer;
         _rewriteService = rewriteService;
+        _reRecognizer = reRecognizer;
+        _ffmpeg = ffmpeg;
         _settings = settings;
         _logger = logger;
     }
@@ -61,7 +68,14 @@ public sealed partial class DubbingViewModel : ObservableObject
     // ---- 按 videoId 分桶的状态 ----
 
     private readonly HashSet<Guid> _busyVideoIds = new();
-    private readonly Dictionary<Guid, string> _videoProgress = new();
+    private readonly Dictionary<Guid, DubProgressInfo> _videoProgress = new();
+
+    /// <summary>
+    /// 配音进度信息：阶段文案 + 完成比例。
+    /// Fraction &lt; 0 表示该阶段无法估算百分比（如分离人声 / 克隆音色，时长不定），UI 走「无限滚动进度条」；
+    /// Fraction ∈ [0,1] 表示可估算（改写 k/n、合成 x/total），UI 走「百分比进度条」。
+    /// </summary>
+    public readonly record struct DubProgressInfo(string Text, double Fraction);
 
     /// <summary>某视频的配音忙碌/进度变化（UI：该视频的配音设置条据此刷新）。</summary>
     public event Action<Guid>? VideoStateChanged;
@@ -75,8 +89,9 @@ public sealed partial class DubbingViewModel : ObservableObject
 
     public bool IsBusy(Guid? videoId) => videoId is { } id && _busyVideoIds.Contains(id);
 
-    public string ProgressText(Guid? videoId) =>
-        videoId is { } id && _videoProgress.TryGetValue(id, out var t) ? t : string.Empty;
+    public DubProgressInfo ProgressInfo(Guid? videoId) =>
+        videoId is { } id && _videoProgress.TryGetValue(id, out var p)
+            ? p : new DubProgressInfo(string.Empty, -1);
 
     private bool BeginBusy(Guid videoId)
     {
@@ -92,9 +107,19 @@ public sealed partial class DubbingViewModel : ObservableObject
         VideoStateChanged?.Invoke(videoId);
     }
 
-    private void SetProgress(Guid videoId, string text)
+    private void SetProgress(Guid videoId, string text, double fraction = -1)
     {
-        _videoProgress[videoId] = text;
+        if (string.IsNullOrEmpty(text)) _videoProgress.Remove(videoId);
+        else _videoProgress[videoId] = new DubProgressInfo(text, fraction);
+        VideoStateChanged?.Invoke(videoId);
+    }
+
+    /// <summary>只更新当前阶段的完成比例（保留已有文案）。供人声分离这种「文案不变、百分比在涨」的长任务用。</summary>
+    private void SetProgressFraction(Guid videoId, double fraction)
+    {
+        var text = _videoProgress.TryGetValue(videoId, out var p) && !string.IsNullOrEmpty(p.Text)
+            ? p.Text : "① 分离人声与背景音乐…";
+        _videoProgress[videoId] = new DubProgressInfo(text, fraction);
         VideoStateChanged?.Invoke(videoId);
     }
 
@@ -138,38 +163,127 @@ public sealed partial class DubbingViewModel : ObservableObject
         await using var db = await _dbFactory.CreateDbContextAsync();
         var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId, ct);
         if (video is null) { ErrorMessage = "找不到视频"; return false; }
-        if (!string.IsNullOrEmpty(video.ClonedVoiceId)) return true;
+
+        var hash = string.IsNullOrEmpty(video.ContentHash) ? video.Id.ToString("N") : video.ContentHash;
+
+        // 已克隆且是「高保真参考」配方注册的 → 直接复用。
+        // 旧版用 24k 单声道参考注册的克隆像机器朗读，这里视为过期、强制重克隆（人声分离已缓存，仅重取
+        // 6s 参考 + 重注册，几秒完成，不重跑 demucs）。对齐 mac「换 Key 自动重克隆」的失效重注册思路。
+        if (!string.IsNullOrEmpty(video.ClonedVoiceId) && _settings.IsCloneHiFi(hash)) return true;
+        var oldVoiceId = video.ClonedVoiceId; // 记录旧音色，重克隆成功后清理其残留（机器音）配音变体
+        if (!string.IsNullOrEmpty(oldVoiceId))
+            _logger.LogInformation("[DubDiag] 存量克隆音色为旧(低保真)配方，自动重克隆 video={Path}", video.LocalPath);
 
         if (string.IsNullOrEmpty(video.LocalPath) || !File.Exists(video.LocalPath))
         {
             ErrorMessage = "找不到原视频文件，无法克隆原声";
             return false;
         }
-
-        var hash = string.IsNullOrEmpty(video.ContentHash) ? video.Id.ToString("N") : video.ContentHash;
-        var progress = new Progress<string>(msg => SetProgress(videoId, msg));
+        var progress = new Progress<string>(msg => SetProgress(videoId, "① " + msg));
+        // 人声分离的实时百分比（demucs 很慢，必须让用户看到在涨，否则像卡死）。
+        var pct = new Progress<double>(f => SetProgressFraction(videoId, f));
         try
         {
             _logger.LogInformation("[DubDiag] 开始克隆原声 video={Path}", video.LocalPath);
-            SetProgress(videoId, "分离人声…");
-            var stems = await _vocalSep.SeparateAsync(video.LocalPath, hash, progress, ct);
+            SetProgress(videoId, "① 分离人声与背景音乐…");
+            var stems = await _vocalSep.SeparateAsync(video.LocalPath, hash, progress, pct, ct);
 
-            SetProgress(videoId, "提取克隆参考…");
+            SetProgress(videoId, "① 提取克隆参考…");
             var refClip = await _vocalSep.ReferenceClipAsync(stems.VocalsPath, 6, ct);
 
-            SetProgress(videoId, "注册克隆音色…");
+            SetProgress(videoId, "② 注册克隆音色…");
             var voiceId = await _cloneService.EnrollAsync(refClip, $"mixcut{hash[..Math.Min(8, hash.Length)]}", ct);
 
             video.ClonedVoiceId = voiceId;
             await db.SaveChangesAsync(ct);
+            _settings.MarkCloneHiFi(hash); // 标记本次用高保真参考注册，后续复用不再重克隆
+
+            // 重克隆（低保真→高保真）：清掉旧音色残留的配音变体，避免检视器/组合导出里
+            // 新旧（机器音）变体并存重复。用户重新点「改写配音」即用新音色重新生成。
+            if (!string.IsNullOrEmpty(oldVoiceId) && oldVoiceId != voiceId)
+            {
+                var stale = await db.SegmentDubs
+                    .Where(d => d.Segment!.VideoId == videoId && d.VoiceId == oldVoiceId)
+                    .ToListAsync(ct);
+                if (stale.Count > 0)
+                {
+                    db.SegmentDubs.RemoveRange(stale);
+                    await db.SaveChangesAsync(ct);
+                    _logger.LogInformation("[DubDiag] 清理旧配方配音变体 {N} 条 video={Vid}", stale.Count, videoId);
+                    DubsChanged?.Invoke();
+                }
+            }
+
             _logger.LogInformation("[DubDiag] 克隆成功 voiceId={VoiceId}", voiceId);
             return true;
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[DubDiag] 克隆失败");
-            ErrorMessage = $"原声克隆失败：{ex.Message}";
+            ErrorMessage = "原声克隆失败：" + ExceptionTranslator.ToUserMessage(ex);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 取该视频分离出的人声轨路径（分离已在 <see cref="EnsureClonedVoiceAsync"/> 里做过，这里命中缓存秒回）。
+    /// 逐分镜克隆时用它按分镜时间区间截参考音。
+    /// </summary>
+    /// <summary>视频级克隆音色（逐段克隆的回退：段太短/无声/注册失败时用它）。</summary>
+    private async Task<string?> GetVideoVoiceAsync(Guid videoId, CancellationToken ct)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return (await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId, ct))?.ClonedVoiceId;
+    }
+
+    private async Task<string?> GetVocalsPathAsync(Guid videoId, CancellationToken ct)
+    {
+        string localPath, hash;
+        await using (var db = await _dbFactory.CreateDbContextAsync())
+        {
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId, ct);
+            if (video is null || string.IsNullOrEmpty(video.LocalPath) || !File.Exists(video.LocalPath)) return null;
+            localPath = video.LocalPath;
+            hash = string.IsNullOrEmpty(video.ContentHash) ? video.Id.ToString("N") : video.ContentHash;
+        }
+        var stems = await _vocalSep.SeparateAsync(localPath, hash, null, null, ct); // 缓存命中
+        return stems.VocalsPath;
+    }
+
+    /// <summary>
+    /// 确保「本分镜」有自己的克隆音色 —— 用本段自己的音频当克隆参考，配音就跟本段原声一致
+    /// （广告常见开头带货钩子换人，整片只取前 6s 克隆会把后段主播串成别人/别的性别）。
+    /// 已克隆则复用 <see cref="Segment.ClonedVoiceId"/>；段太短/无声/注册失败则回退传入的视频级音色。
+    /// </summary>
+    private async Task<string> EnsureSegmentVoiceAsync(Guid segmentId, string vocalsPath, string fallbackVoiceId, CancellationToken ct)
+    {
+        double start, dur; string namePrefix;
+        await using (var db = await _dbFactory.CreateDbContextAsync())
+        {
+            var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+            if (seg is null) return fallbackVoiceId;
+            if (!string.IsNullOrEmpty(seg.ClonedVoiceId)) return seg.ClonedVoiceId!; // 已逐段克隆，复用
+            start = seg.StartTime;
+            dur = seg.Duration;
+            namePrefix = "seg" + segmentId.ToString("N")[..Math.Min(6, 32)];
+        }
+        // 参考取本段音频，≤6s；太短(<1.2s)难克隆 → 回退视频级音色，避免糊出怪音。
+        var refDur = Math.Min(6.0, dur);
+        if (refDur < 1.2) return fallbackVoiceId; // 段太短，克隆不稳，回退
+        try
+        {
+            var refClip = await _vocalSep.SegmentReferenceClipAsync(vocalsPath, start, refDur, ct);
+            var voiceId = await _cloneService.EnrollAsync(refClip, namePrefix, ct);
+            await using var db = await _dbFactory.CreateDbContextAsync();
+            var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+            if (seg is not null) { seg.ClonedVoiceId = voiceId; await db.SaveChangesAsync(ct); }
+            _logger.LogInformation("[DubDiag] 分镜克隆音色成功 seg={Seg} voiceId={V}", segmentId, voiceId);
+            return voiceId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("[DubDiag] 分镜克隆失败 seg={Seg}，回退视频级音色：{Msg}", segmentId, ex.Message);
+            return fallbackVoiceId;
         }
     }
 
@@ -198,14 +312,13 @@ public sealed partial class DubbingViewModel : ObservableObject
             if (segIds.Count == 0) { ErrorMessage = "没有可重配的分镜"; return; }
 
             var n = VariantCount;
-            await RewriteSegmentsAsync(videoId, segIds, voiceId, n, ct);
+            var vocalsPath = await GetVocalsPathAsync(videoId, ct); // 逐分镜克隆用（分离已缓存，秒回）
+            await RewriteSegmentsAsync(videoId, segIds, voiceId, vocalsPath, n, ct);
 
-            var (ok, fail) = await GenerateAllPendingAsync(videoId, segIds, ct);
+            var (ok, fail, errors) = await GenerateAllPendingAsync(videoId, segIds, ct);
             DubsChanged?.Invoke();
             var produced = segIds.Count * n;
-            ShowSummary(fail > 0
-                ? $"已生成 {produced} 个变体，配音合成 {ok} 成功 / {fail} 失败，失败项可在右侧点 ↻ 重试"
-                : $"已生成 {produced} 个配音变体并完成合成，点开任意分镜可在右侧试听", fail > 0);
+            ShowDubResult($"已生成 {produced} 个配音变体并完成合成，点开任意分镜可在右侧试听", ok, fail, errors);
         }
         finally
         {
@@ -237,10 +350,11 @@ public sealed partial class DubbingViewModel : ObservableObject
             }
             if (string.IsNullOrEmpty(voiceId)) { ErrorMessage = "克隆原声未就绪"; return; }
 
-            await RewriteSegmentsAsync(videoId, new[] { segmentId }, voiceId, VariantCount, ct);
-            var (ok, fail) = await GenerateAllPendingAsync(videoId, new[] { segmentId }, ct);
+            var vocalsPath = await GetVocalsPathAsync(videoId, ct);
+            await RewriteSegmentsAsync(videoId, new[] { segmentId }, voiceId, vocalsPath, VariantCount, ct);
+            var (ok, fail, errors) = await GenerateAllPendingAsync(videoId, new[] { segmentId }, ct);
             DubsChanged?.Invoke();
-            ShowSummary(fail > 0 ? $"本分镜已重写，配音 {ok} 成功 / {fail} 失败" : "本分镜已重新改写并生成配音", fail > 0);
+            ShowDubResult("本分镜已重新改写并生成配音", ok, fail, errors);
         }
         finally { EndBusy(videoId); }
     }
@@ -256,12 +370,28 @@ public sealed partial class DubbingViewModel : ObservableObject
             if (seg.IsVoiceLocked) { ErrorMessage = "该分镜保留原声，不参与配音"; return null; }
             videoId = seg.Video.Id;
         }
-        if (!await EnsureClonedVoiceAsync(videoId, ct)) return null;
 
-        await using (var db = await _dbFactory.CreateDbContextAsync())
+        // 对齐 mac addManualVariant：整段标记该视频忙碌。否则首次手动添加要先克隆原声（demucs 分离很慢），
+        // 但视频进度条（绑 IsDubBusy）不显示 → 用户「点了没反应」干等。BeginBusy 后克隆/分离进度可见。
+        if (!BeginBusy(videoId)) { _logger.LogInformation("[DubDiag] 手动添加忽略（该视频正忙）seg={Seg}", segmentId); return null; }
+        try
         {
-            var voiceId = (await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId, ct))?.ClonedVoiceId ?? "";
+            _logger.LogInformation("[DubDiag] 手动添加开始 seg={Seg}", segmentId);
+            if (!await EnsureClonedVoiceAsync(videoId, ct))
+            {
+                _logger.LogWarning("[DubDiag] 手动添加失败：克隆未就绪 seg={Seg} err={Err}", segmentId, ErrorMessage);
+                return null;
+            }
+
+            // 本分镜自己的克隆音色（逐段克隆）；拿不到人声轨或段太短则回退视频级音色。
+            var fallback = (await GetVideoVoiceAsync(videoId, ct)) ?? "";
+            var vocals = await GetVocalsPathAsync(videoId, ct);
+            var voiceId = string.IsNullOrEmpty(vocals)
+                ? fallback
+                : await EnsureSegmentVoiceAsync(segmentId, vocals!, fallback, ct);
             if (string.IsNullOrEmpty(voiceId)) { ErrorMessage = "克隆原声未就绪"; return null; }
+
+            await using var db = await _dbFactory.CreateDbContextAsync();
             var nextIndex = await db.SegmentDubs.Where(d => d.SegmentId == segmentId)
                 .Select(d => (int?)d.TextVariantIndex).MaxAsync(ct) ?? -1;
             nextIndex += 1;
@@ -271,8 +401,10 @@ public sealed partial class DubbingViewModel : ObservableObject
             });
             await db.SaveChangesAsync(ct);
             DubsChanged?.Invoke();
+            _logger.LogInformation("[DubDiag] 手动添加完成 seg={Seg} 新版下标={Idx}", segmentId, nextIndex);
             return nextIndex;
         }
+        finally { EndBusy(videoId); }
     }
 
     /// <summary>编辑某改写版台词并重生成该版配音。</summary>
@@ -305,9 +437,9 @@ public sealed partial class DubbingViewModel : ObservableObject
         try
         {
             SetProgress(videoId, "重新合成本版配音…");
-            var (ok, fail) = await GenerateAllPendingAsync(videoId, new[] { segmentId }, ct);
+            var (ok, fail, errors) = await GenerateAllPendingAsync(videoId, new[] { segmentId }, ct);
             DubsChanged?.Invoke();
-            ShowSummary(fail > 0 ? $"台词已更新，配音 {ok} 成功 / {fail} 失败" : "台词已更新并重新生成配音", fail > 0);
+            ShowDubResult("台词已更新并重新生成配音", ok, fail, errors);
         }
         finally { EndBusy(videoId); }
     }
@@ -345,6 +477,132 @@ public sealed partial class DubbingViewModel : ObservableObject
         DubsChanged?.Invoke();
     }
 
+    /// <summary>
+    /// 设置「保留原声」（明星出镜锁定）并落库。锁定后不参与改写/配音/换字幕。
+    /// 对应 mac SegmentDubControls 的 isVoiceLocked binding。
+    /// </summary>
+    public async Task SetVoiceLockedAsync(Guid segmentId, bool locked, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+        if (seg is null || seg.IsVoiceLocked == locked) return;
+        seg.IsVoiceLocked = locked;
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("[DubDiag] 保留原声 seg={Seg} locked={Locked}", segmentId, locked);
+        DubsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 手动编辑分镜台词并落库（对齐 mac saveText）。只改 Text，不动边界/不动已生成的配音变体。
+    /// 返回清洗后的文本（trim）。改完台词后如需按新词重配音，用户再点该分镜的「重新改写」。
+    /// </summary>
+    public async Task<string> UpdateSegmentTextAsync(Guid segmentId, string newText, CancellationToken ct = default)
+    {
+        var trimmed = (newText ?? string.Empty).Trim();
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+        if (seg is null) return trimmed;
+        if (seg.Text == trimmed) return trimmed;
+        seg.Text = trimmed;
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("[DubDiag] 编辑台词 seg={Seg} 字数={N}", segmentId, trimmed.Length);
+        DubsChanged?.Invoke();
+        return trimmed;
+    }
+
+    /// <summary>
+    /// 设置字幕处理方式（直接烧录 / 模糊虚化 / 纯色遮挡）并落库。
+    /// 映射到底层 HasHardSubtitle + MaskStyleRaw（见 Segment.SubtitleTreatment 计算属性）。
+    /// </summary>
+    public async Task SetSubtitleTreatmentAsync(Guid segmentId, SubtitleTreatment treatment, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+        if (seg is null || seg.SubtitleTreatment == treatment) return;
+        seg.SubtitleTreatment = treatment;
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("[DubDiag] 字幕处理 seg={Seg} treatment={T}", segmentId, treatment);
+        DubsChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 保存遮挡框归一化坐标（拖拽松手时调一次，拖拽期间只写内存不落库——对齐 mac onCommit）。
+    /// </summary>
+    public async Task SetMaskRectAsync(Guid segmentId, SubtitleMaskRect rect, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+        if (seg is null) return;
+        seg.MaskRect = rect;
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
+    /// 把某分镜的字幕处理（HasHardSubtitle + 样式 + 遮挡框）应用到同视频<b>其余</b>所有分镜。
+    /// 返回被影响的分镜数。对应 mac applyMaskToAllSegments。
+    /// </summary>
+    public async Task<int> ApplyMaskToAllAsync(Guid segmentId, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var src = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+        if (src?.VideoId is null) return 0;
+        var hasHard = src.HasHardSubtitle;
+        var styleRaw = src.MaskStyleRaw;
+        var rectJson = src.MaskRectJson;
+        var sibs = await db.Segments
+            .Where(s => s.VideoId == src.VideoId && s.Id != src.Id)
+            .ToListAsync(ct);
+        foreach (var s in sibs)
+        {
+            s.HasHardSubtitle = hasHard;
+            s.MaskStyleRaw = styleRaw;
+            s.MaskRectJson = rectJson;
+        }
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("[DubDiag] 遮挡应用到所有 src={Seg} affected={N}", segmentId, sibs.Count);
+        DubsChanged?.Invoke();
+        return sibs.Count;
+    }
+
+    /// <summary>
+    /// 单分镜重识别（↻ 按钮）：抽该分镜区间音频 → paraformer 流式 ASR → 只替换台词文本，不动边界。
+    /// 返回新识别的文本。失败抛异常（由 UI 层翻译为人话 toast）。
+    /// 对应 mac Sources/MixCut/SegmentReRecognition.swift。
+    /// </summary>
+    public async Task<string> ReRecognizeSegmentAsync(Guid segmentId, CancellationToken ct = default)
+    {
+        Segment seg;
+        await using (var db = await _dbFactory.CreateDbContextAsync())
+        {
+            seg = await db.Segments.Include(s => s.Video)
+                .FirstOrDefaultAsync(s => s.Id == segmentId, ct)
+                ?? throw new DubException("分镜不存在");
+        }
+
+        var videoPath = seg.Video?.LocalPath;
+        if (string.IsNullOrEmpty(videoPath) || !File.Exists(videoPath))
+            throw new DubException("源视频文件不存在，无法提取音频");
+
+        // 抽区间音频 + Paraformer 精识别（与导入自动逐分镜精识别共用 SegmentReRecognizer，逻辑单一来源）。
+        var transcript = await _reRecognizer.RecognizeAsync(videoPath, seg.StartTime, seg.EndTime, ct);
+
+        // 落库：只换 Text，不动边界。
+        await using (var db = await _dbFactory.CreateDbContextAsync())
+        {
+            var target = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+            if (target is not null)
+            {
+                target.Text = transcript;
+                await db.SaveChangesAsync(ct);
+            }
+        }
+
+        _logger.LogInformation("[DubDiag] 重识别 seg={Seg} 新文本={Text}",
+            segmentId, transcript.Length > 60 ? transcript[..60] + "…" : transcript);
+        DubsChanged?.Invoke();
+        return transcript;
+    }
+
     /// <summary>重新生成单个变体的配音（检视器 ↻ 按钮）。</summary>
     public async Task<bool> RegenerateAudioAsync(Guid dubId, CancellationToken ct = default)
     {
@@ -360,17 +618,42 @@ public sealed partial class DubbingViewModel : ObservableObject
         if (solo) BeginBusy(videoId);
         try
         {
-            var ok = await GenerateAudioAsync(dubId, ct);
+            var err = await GenerateAudioAsync(dubId, ct);
+            if (err is not null) ErrorMessage = err;   // 单条生成失败也把真实原因透出
             DubsChanged?.Invoke();
-            return ok;
+            return err is null;
         }
         finally { if (solo) EndBusy(videoId); }
     }
 
     // ---- 内部：改写 + 合成 ----
 
-    private async Task RewriteSegmentsAsync(Guid videoId, IReadOnlyList<Guid> segIds, string voiceId, int n, CancellationToken ct)
+    private async Task RewriteSegmentsAsync(Guid videoId, IReadOnlyList<Guid> segIds, string fallbackVoiceId, string? vocalsPath, int n, CancellationToken ct)
     {
+        // ① 每个分镜先各自克隆自己的音色（配音跟本段原声一致）。无人声轨时全体回退视频级音色。
+        var segVoice = new Dictionary<Guid, string>();
+        for (var i = 0; i < segIds.Count; i++)
+        {
+            SetProgress(videoId, $"② 逐分镜克隆音色 {i + 1}/{segIds.Count}…", segIds.Count > 0 ? (double)i / segIds.Count : -1);
+            segVoice[segIds[i]] = string.IsNullOrEmpty(vocalsPath)
+                ? fallbackVoiceId
+                : await EnsureSegmentVoiceAsync(segIds[i], vocalsPath!, fallbackVoiceId, ct);
+        }
+
+        // 清理"本段旧音色"残留的配音变体：换成逐段克隆后，用别的音色（如旧的视频级前 6s 音色）生成的变体应作废，
+        // 避免检视器/组合导出里新旧并存重复。
+        await using (var cdb = await _dbFactory.CreateDbContextAsync())
+        {
+            var dubs = await cdb.SegmentDubs.Where(d => segIds.Contains(d.SegmentId!.Value)).ToListAsync(ct);
+            var toRemove = dubs.Where(d => segVoice.TryGetValue(d.SegmentId!.Value, out var v) && d.VoiceId != v).ToList();
+            if (toRemove.Count > 0)
+            {
+                cdb.SegmentDubs.RemoveRange(toRemove);
+                await cdb.SaveChangesAsync(ct);
+                _logger.LogInformation("[DubDiag] 逐段克隆：清理旧音色变体 {N} 条 video={Vid}", toRemove.Count, videoId);
+            }
+        }
+
         // 取原台词/时长/关键词
         List<RewriteSegmentInput> AllInputs;
         await using (var db = await _dbFactory.CreateDbContextAsync())
@@ -382,7 +665,7 @@ public sealed partial class DubbingViewModel : ObservableObject
 
         for (var k = 0; k < n; k++)
         {
-            SetProgress(videoId, $"改写第 {k + 1}/{n} 套…");
+            SetProgress(videoId, $"③ 改写台词 第 {k + 1}/{n} 套…", n > 0 ? (double)k / n : -1);
             IReadOnlyList<RewrittenSegment> results;
             try
             {
@@ -391,7 +674,7 @@ public sealed partial class DubbingViewModel : ObservableObject
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[DubDiag] 改写失败 k={K}", k);
-                ErrorMessage = $"改写失败：{ex.Message}";
+                ErrorMessage = "改写失败：" + ExceptionTranslator.ToUserMessage(ex);
                 return;
             }
 
@@ -399,13 +682,14 @@ public sealed partial class DubbingViewModel : ObservableObject
             foreach (var r in results)
             {
                 if (!Guid.TryParse(r.SegmentId, out var segId)) continue;
+                var vId = segVoice.TryGetValue(segId, out var vv) ? vv : fallbackVoiceId; // 本段自己的克隆音色
                 var existing = await db.SegmentDubs.FirstOrDefaultAsync(
-                    d => d.SegmentId == segId && d.VoiceId == voiceId && d.TextVariantIndex == k, ct);
+                    d => d.SegmentId == segId && d.VoiceId == vId && d.TextVariantIndex == k, ct);
                 if (existing is null)
                 {
                     db.SegmentDubs.Add(new SegmentDub
                     {
-                        SegmentId = segId, VoiceId = voiceId, TextVariantIndex = k, RewrittenText = r.RewrittenText,
+                        SegmentId = segId, VoiceId = vId, TextVariantIndex = k, RewrittenText = r.RewrittenText,
                     });
                 }
                 else if (existing.RewrittenText != r.RewrittenText)
@@ -420,7 +704,7 @@ public sealed partial class DubbingViewModel : ObservableObject
         SetProgress(videoId, "");
     }
 
-    private async Task<(int ok, int fail)> GenerateAllPendingAsync(Guid videoId, IReadOnlyList<Guid> segIds, CancellationToken ct)
+    private async Task<(int ok, int fail, List<string> errors)> GenerateAllPendingAsync(Guid videoId, IReadOnlyList<Guid> segIds, CancellationToken ct)
     {
         List<Guid> pending;
         await using (var db = await _dbFactory.CreateDbContextAsync())
@@ -429,19 +713,24 @@ public sealed partial class DubbingViewModel : ObservableObject
                 .Where(d => segIds.Contains(d.SegmentId!.Value) && d.AudioFilePath == null && d.RewrittenText != "")
                 .Select(d => d.Id).ToListAsync(ct);
         }
-        if (pending.Count == 0) return (0, 0);
+        if (pending.Count == 0) return (0, 0, new List<string>());
 
         int ok = 0, fail = 0;
+        var errors = new List<string>();   // 去重收集真实失败原因（对齐 mac generateAllAudio errors[]）
         foreach (var dubId in pending)
         {
-            SetProgress(videoId, $"合成配音 {ok + fail + 1}/{pending.Count}…");
-            if (await GenerateAudioAsync(dubId, ct)) ok++; else fail++;
+            SetProgress(videoId, $"④ 合成配音 {ok + fail + 1}/{pending.Count}…",
+                pending.Count > 0 ? (double)(ok + fail) / pending.Count : -1);
+            var err = await GenerateAudioAsync(dubId, ct);
+            if (err is null) { ok++; }
+            else { fail++; if (!errors.Contains(err)) errors.Add(err); }
         }
         SetProgress(videoId, "");
-        return (ok, fail);
+        return (ok, fail, errors);
     }
 
-    private async Task<bool> GenerateAudioAsync(Guid dubId, CancellationToken ct)
+    /// <summary>生成一条配音音频。成功返回 null；失败返回<b>人话</b>失败原因（供批量汇总透出真实原因）。</summary>
+    private async Task<string?> GenerateAudioAsync(Guid dubId, CancellationToken ct)
     {
         // 读取生成所需上下文
         string text, voiceId, videoHash;
@@ -452,7 +741,8 @@ public sealed partial class DubbingViewModel : ObservableObject
         {
             var dub = await db.SegmentDubs.Include(d => d.Segment).ThenInclude(s => s!.Video)
                 .FirstOrDefaultAsync(d => d.Id == dubId, ct);
-            if (dub?.Segment?.Video is null || string.IsNullOrEmpty(dub.RewrittenText)) return false;
+            if (dub?.Segment?.Video is null || string.IsNullOrEmpty(dub.RewrittenText))
+                return "配音数据缺失或改写文本为空（请重新改写）";
             text = dub.RewrittenText;
             voiceId = dub.VoiceId;
             segmentId = dub.Segment.Id;
@@ -472,7 +762,7 @@ public sealed partial class DubbingViewModel : ObservableObject
 
             await using var db = await _dbFactory.CreateDbContextAsync();
             var dub = await db.SegmentDubs.FirstOrDefaultAsync(d => d.Id == dubId, ct);
-            if (dub is null) return false;
+            if (dub is null) return "配音已生成但写回失败（该变体可能已被删除）";
             dub.AudioFilePath = finalized.M4aPath;
             dub.AtempoFactor = finalized.Plan.AtempoFactor;
             dub.FreezePadFrames = finalized.Plan.FreezePadFrames;
@@ -483,7 +773,7 @@ public sealed partial class DubbingViewModel : ObservableObject
             dub.GeneratedForTextHash = TextHash(text);
             dub.StatusRaw = nameof(SegmentDubStatus.Generated);
             await db.SaveChangesAsync(ct);
-            return true;
+            return null;
         }
         catch (Exception ex)
         {
@@ -491,45 +781,105 @@ public sealed partial class DubbingViewModel : ObservableObject
             await using var db = await _dbFactory.CreateDbContextAsync();
             var dub = await db.SegmentDubs.FirstOrDefaultAsync(d => d.Id == dubId, ct);
             if (dub is not null) { dub.StatusRaw = nameof(SegmentDubStatus.Failed); await db.SaveChangesAsync(ct); }
-            return false;
+            // 把真实原因翻成人话回传（欠费/免费额度耗尽/无效 Key…），供批量汇总展示，不再吞掉。
+            return ExceptionTranslator.ToUserMessage(ex);
         }
     }
 
-    // ---- 试听（对齐后的成片音频，用 MediaPlayer 播 m4a）----
-
-    private MediaPlayer? _audioPlayer;
+    // ---- 试听（应用内播放）----
+    // 用 NAudio（项目已依赖，FfmpegFramePlayer 同款）WaveOutEvent + AudioFileReader 播 PCM wav。
+    // 成片是 AAC/m4a，先用自带 ffmpeg 解成 PCM wav（不碰系统 codec，缓存在 m4a 同目录 .preview.wav）再播。
+    // 注：出不出声取决于系统默认播放设备是否为真实扬声器——2026-07-02 曾因默认设备被 ThirdParty
+    // 虚拟音频（ToDesk Virtual Audio）占用导致整机无声，与本代码无关。
+    private NAudio.Wave.IWavePlayer? _waveOut;
+    private NAudio.Wave.AudioFileReader? _audioReader;
     private Guid? playingDubId;
+    private CancellationTokenSource? _playCts;
 
     public Guid? PlayingDubId => playingDubId;
 
-    public void PlayDub(SegmentDub dub)
+    public async void PlayDub(SegmentDub dub)
     {
         if (playingDubId == dub.Id) { StopDubPlayback(); return; }
-        if (string.IsNullOrEmpty(dub.AudioFilePath) || !File.Exists(dub.AudioFilePath))
+        StopDubPlayback();
+
+        var m4a = dub.AudioFilePath;
+        if (string.IsNullOrEmpty(m4a) || !File.Exists(m4a))
         {
-            ErrorMessage = "音频文件不存在，请重新生成该变体";
+            ErrorMessage = "该变体还没有生成音频，先点「生成」";
+            _logger.LogWarning("[DubPlayDiag] 音频文件不存在 dub={Id} path={Path}", dub.Id, m4a);
             return;
         }
-        StopDubPlayback();
+
+        playingDubId = dub.Id;
         try
         {
-            _audioPlayer = new MediaPlayer();
-            _audioPlayer.Open(new Uri(dub.AudioFilePath));
-            _audioPlayer.MediaEnded += (_, _) => StopDubPlayback();
-            _audioPlayer.Play();
-            playingDubId = dub.Id;
+            var wav = Path.ChangeExtension(m4a, ".preview.wav");
+            if (!File.Exists(wav) || File.GetLastWriteTimeUtc(wav) < File.GetLastWriteTimeUtc(m4a))
+            {
+                _playCts = new CancellationTokenSource();
+                await _ffmpeg.RunAsync(
+                    new[] { "-y", "-i", m4a, "-vn", "-ac", "2", "-ar", "44100", "-c:a", "pcm_s16le", wav },
+                    timeout: TimeSpan.FromSeconds(30), cancellationToken: _playCts.Token);
+            }
+            if (playingDubId != dub.Id) return; // 解码期间被抢占/停止
+
+            _audioReader = new NAudio.Wave.AudioFileReader(wav);
+            _waveOut = new NAudio.Wave.WaveOutEvent();
+            _waveOut.Init(_audioReader);
+            var thisId = dub.Id;
+            _waveOut.PlaybackStopped += (_, _) =>
+                System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+                {
+                    if (playingDubId == thisId) StopDubPlayback();
+                });
+            _waveOut.Play();
+            _logger.LogInformation("[DubPlayDiag] 试听开始 dub={Id} dur={Dur:F1}s wav={Wav}",
+                dub.Id, dub.AudioDuration, Path.GetFileName(wav));
         }
         catch (Exception ex)
         {
-            ErrorMessage = $"播放失败：{ex.Message}";
+            playingDubId = null;
+            ErrorMessage = "试听失败，请重试（音频文件可能损坏或被其它程序占用）";
+            _logger.LogWarning(ex, "[DubPlayDiag] 试听失败 dub={Id}", dub.Id);
         }
     }
 
     public void StopDubPlayback()
     {
-        try { _audioPlayer?.Stop(); _audioPlayer?.Close(); } catch { }
-        _audioPlayer = null;
+        try { _playCts?.Cancel(); } catch { }
+        try { _waveOut?.Stop(); } catch { }
+        try { _waveOut?.Dispose(); } catch { }
+        try { _audioReader?.Dispose(); } catch { }
+        _waveOut = null;
+        _audioReader = null;
+        _playCts = null;
         playingDubId = null;
+    }
+
+    /// <summary>
+    /// 把生成好的配音音频导出到用户指定文件（供本地播放器试听 / 归档）。
+    /// 返回实际写出的路径；未生成音频或复制失败返回 null（调用方给人话提示）。
+    /// </summary>
+    public string? ExportDubAudio(SegmentDub dub, string targetPath)
+    {
+        if (string.IsNullOrEmpty(dub.AudioFilePath) || !File.Exists(dub.AudioFilePath))
+        {
+            ErrorMessage = "该变体还没有生成音频，先点「生成」再导出";
+            return null;
+        }
+        try
+        {
+            File.Copy(dub.AudioFilePath, targetPath, overwrite: true);
+            _logger.LogInformation("[DubPlayDiag] 配音已导出 dub={Id} -> {Path}", dub.Id, targetPath);
+            return targetPath;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = "导出失败，请重试（目标位置可能无写入权限或磁盘空间不足）";
+            _logger.LogWarning(ex, "[DubPlayDiag] 配音导出失败 dub={Id}", dub.Id);
+            return null;
+        }
     }
 
     // ---- helpers ----
@@ -537,6 +887,26 @@ public sealed partial class DubbingViewModel : ObservableObject
     private static void ShowSummary(string message, bool isWarning) =>
         Views.Components.ToastService.Show(message,
             isWarning ? Views.Components.ToastStyle.Warning : Views.Components.ToastStyle.Success);
+
+    /// <summary>
+    /// 配音批量结果统一提示（对齐 mac dubFailureMessage）：全成功走成功 toast；
+    /// 有失败时把<b>前 2 类真实原因</b>拼进横幅 <see cref="ErrorMessage"/>（可换行看全），
+    /// toast 只给一句「N 成功/M 失败，点看原因」，不再只报干巴巴的计数让用户一头雾水。
+    /// </summary>
+    private void ShowDubResult(string successMessage, int ok, int fail, IReadOnlyList<string> errors)
+    {
+        if (fail <= 0)
+        {
+            ErrorMessage = null;
+            ShowSummary(successMessage, false);
+            return;
+        }
+        var reasons = errors.Take(2).ToList();
+        var reasonText = reasons.Count > 0 ? string.Join("；", reasons) : "未知原因";
+        var more = errors.Count > 2 ? $"（另有 {errors.Count - 2} 类原因）" : "";
+        ErrorMessage = $"配音 {ok} 成功 / {fail} 失败：{reasonText}{more}";
+        ShowSummary($"配音 {ok} 成功 / {fail} 失败，原因见上方提示", true);
+    }
 
     /// <summary>文本哈希（失效追踪用）。</summary>
     public static string TextHash(string text)

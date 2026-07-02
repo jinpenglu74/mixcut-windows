@@ -1,0 +1,28 @@
+<UserControl x:Class="MixCut.Views.SegmentLibrary.SubtitleMaskOverlay"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             mc:Ignorable="d">
+    <!-- 9:16 预览上的可拖拽/可调高遮挡框（对齐 mac SubtitleMaskOverlay）。
+         父容器需给定 9:16 尺寸；归一化 Rect 直接映射到该尺寸像素。
+         Canvas 背景=null（非 Transparent）：空白区不参与命中测试，点击穿透到卡片做选中/播放；
+         只有 MaskBox / Handle 自身接收拖拽。 -->
+    <Canvas x:Name="CanvasRoot" Background="{x:Null}" ClipToBounds="True"
+            SizeChanged="OnSizeChanged">
+        <!-- 所见即所得字号预览：示例字幕（贴字圆角胶囊底衬），居中于遮挡带，字号=显示宽×全局比例。
+             IsHitTestVisible=False：只作预览，绝不拦拖拽/点击。对齐 mac SubtitleSizePreviewOverlay。 -->
+        <Border x:Name="PreviewPill" IsHitTestVisible="False"
+                Background="#80000000" CornerRadius="4" Padding="6,2">
+            <TextBlock x:Name="PreviewText" Text="这里是字幕" Foreground="White" FontWeight="Bold" />
+        </Border>
+        <!-- 遮挡区域：半透明蓝框，可整体上下拖（仅模糊/纯色处理时显示） -->
+        <Border x:Name="MaskBox" Cursor="SizeAll"
+                Background="#471D6BE5" BorderBrush="#1D6BE5" BorderThickness="1.5"
+                MouseLeftButtonDown="OnBoxDown" MouseMove="OnDragMove" MouseLeftButtonUp="OnDragUp" />
+        <!-- 底部调高手柄 -->
+        <Border x:Name="Handle" Width="40" Height="14" Cursor="SizeNS"
+                Background="White" BorderBrush="#1D6BE5" BorderThickness="1.5" CornerRadius="7"
+                MouseLeftButtonDown="OnHandleDown" MouseMove="OnDragMove" MouseLeftButtonUp="OnDragUp" />
+    </Canvas>
+</UserControl>

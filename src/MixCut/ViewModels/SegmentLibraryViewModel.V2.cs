@@ -442,4 +442,94 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         _ = DubInspector?.LoadAsync(card.Segment);
     }
 
+    // ============ P3：字幕处理（保留原声 / 字幕处理 / 遮挡框） ============
+
+    async Task ISegmentCardHost.ToggleVoiceLockAsync(SegmentCardViewModel card, bool locked)
+    {
+        await _dubbing.SetVoiceLockedAsync(card.Segment.Id, locked);
+        // 关键修复：_dubbing 用独立短上下文改的是 DB 里另一个 Segment 实例，card.Segment 是内存里
+        // LoadSegments 时加载的对象，不会被那次写入更新。必须手动同步内存对象，否则 RefreshFromSegment
+        // 读到旧值 → 复选框/字幕处理面板不刷新 → 用户感知「点了没反应」。
+        card.Segment.IsVoiceLocked = locked;
+        // 刷新该卡 + 检视器（锁定 → 检视器切到 Locked 态）
+        // DubsChanged 已由 SetVoiceLockedAsync 内部触发（刷新设置条变体计数）
+        card.RefreshFromSegment();
+        _ = DubInspector?.LoadAsync(card.Segment);
+    }
+
+    async Task ISegmentCardHost.SetSubtitleTreatmentAsync(SegmentCardViewModel card, SubtitleTreatment treatment)
+    {
+        await _dubbing.SetSubtitleTreatmentAsync(card.Segment.Id, treatment);
+        // 同上：同步内存 Segment，否则三胶囊高亮不切换（DataTrigger 绑 SubtitleTreatment 读到旧值）。
+        card.Segment.SubtitleTreatment = treatment;
+        // DubsChanged 已由 SetSubtitleTreatmentAsync 内部触发
+        card.RefreshFromSegment();
+    }
+
+    void ISegmentCardHost.CommitMaskRect(SegmentCardViewModel card)
+    {
+        _ = _dubbing.SetMaskRectAsync(card.Segment.Id, card.MaskRect);
+    }
+
+    async Task ISegmentCardHost.ApplyMaskToAllAsync(SegmentCardViewModel card)
+    {
+        var n = await _dubbing.ApplyMaskToAllAsync(card.Segment.Id);
+
+        // _dubbing 走的是另一个短上下文，只改了 DB —— 分镜库 VM 的 _segments（卡片正绑定的对象）还是旧值。
+        // 必须把源分镜的「字幕处理 + 遮挡框」同步到同一视频其余分镜的内存对象，再刷新对应卡片，UI 才联动。
+        // 不能走 LoadSegments()：它换成新实例后 RebuildGroups 复用的旧卡片仍指向旧 Segment 对象 → RefreshFromSegment 读到旧值（正是本 bug 根因）。
+        var src = card.Segment;
+        var videoId = src.VideoId;
+        foreach (var seg in _segments.Where(s => s.VideoId == videoId && s.Id != src.Id))
+        {
+            seg.HasHardSubtitle = src.HasHardSubtitle;
+            seg.MaskStyleRaw = src.MaskStyleRaw;
+            seg.MaskRectJson = src.MaskRectJson;
+        }
+        // 刷新受影响卡片：字幕处理胶囊高亮 / 遮挡框显隐 / 所见即所得预览都要跟着变（含源卡自身）。
+        foreach (var c in _cardIndex.Values.Where(c => c.Segment.VideoId == videoId))
+        {
+            c.RefreshFromSegment();
+        }
+        Serilog.Log.Information("[GroupDiag] 遮挡应用到所有 src={Seg} affected={N} 刷新卡片={Cards}",
+            src.Id, n, _cardIndex.Values.Count(c => c.Segment.VideoId == videoId));
+
+        Views.Components.ToastService.Show(
+            n > 0 ? $"已将字幕处理应用到本视频其余 {n} 个分镜" : "本视频没有其它分镜",
+            Views.Components.ToastStyle.Success);
+    }
+
+    void ISegmentCardHost.RefreshCardFromHost(SegmentCardViewModel card) => card.RefreshFromSegment();
+
+    async Task<string> ISegmentCardHost.ReRecognizeSegmentAsync(SegmentCardViewModel card, CancellationToken ct)
+    {
+        try
+        {
+            var newText = await _dubbing.ReRecognizeSegmentAsync(card.Segment.Id, ct);
+            // 同步内存 Segment.Text：ReRecognizeSegmentAsync 只改了另一个短上下文里的实体，
+            // 不同步这里的话，卡片随后 RefreshFromSegment 会用旧 _segment.Text 把新识别结果覆盖回去，
+            // 看着像「点了没反应」（对齐 [[dub-p3-inmemory-sync-bug]] 教训）。
+            card.Segment.Text = newText;
+            Views.Components.ToastService.Show(
+                $"重识别完成（{newText.Length} 字）",
+                Views.Components.ToastStyle.Success);
+            return newText;
+        }
+        catch (Exception ex)
+        {
+            var msg = ex is MixCut.Services.Dubbing.DubException d ? d.Message : "重识别失败，请稍后重试";
+            Views.Components.ToastService.Show(msg, Views.Components.ToastStyle.Error);
+            return string.Empty;
+        }
+    }
+
+    async Task<string> ISegmentCardHost.SaveSegmentTextAsync(SegmentCardViewModel card, string newText, CancellationToken ct)
+    {
+        var saved = await _dubbing.UpdateSegmentTextAsync(card.Segment.Id, newText, ct);
+        // 同步内存 Segment.Text（同 ReRecognize：短上下文改的是另一个实例）。
+        card.Segment.Text = saved;
+        Views.Components.ToastService.Show("台词已保存", Views.Components.ToastStyle.Success);
+        return saved;
+    }
+
 }

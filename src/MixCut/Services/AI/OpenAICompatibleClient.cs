@@ -321,9 +321,11 @@ public sealed class OpenAICompatibleClient : IAiProvider
                     }
                     // 其余 4xx（429 已在上面单独处理）是确定性客户端错误（模型名/接口地址/参数配置错），
                     // 重试 3 次也是同样结果 → 立即抛不可重试异常，避免用户配错后干等 ~14s 指数退避。
+                    // 走统一分类器：403 免费额度耗尽 / 未开通模型权限 / 无效 Key 等各自给准确人话，
+                    // 而不是一律「请检查模型名称」（否则付费模型免费额度用完会被误导去开克隆权限）。
                     if (code is >= 400 and < 500)
                     {
-                        throw AIProviderException.ClientError(code, Redact(Truncate(data, 200)));
+                        throw AIProviderException.Classified(code, data, Redact(Truncate(data, 200)));
                     }
                     throw AIProviderException.RequestFailed(
                         $"HTTP {code}: {Redact(Truncate(data, 200))}");

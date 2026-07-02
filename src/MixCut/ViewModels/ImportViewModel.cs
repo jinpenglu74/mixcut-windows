@@ -41,6 +41,7 @@ public enum VideoStage
     Asr,            // 语音识别
     AiAnalyze,      // AI 语义分析
     Finalize,       // 边界优化 + 缩略图
+    Refine,         // 阿里逐分镜精识别台词（对齐 mac 混合架构）
     Completed,
     Failed,
 }
@@ -68,6 +69,7 @@ public partial class ImportViewModel : ObservableObject
     private readonly ASRService _asrService;
     private readonly AIAnalysisService _aiAnalysis;
     private readonly BoundaryOptimizerService _boundaryOptimizer;
+    private readonly Services.Dubbing.SegmentReRecognizer _reRecognizer;
     private readonly AppSettings _settings;
     private readonly ILogger<ImportViewModel> _logger;
 
@@ -122,10 +124,11 @@ public partial class ImportViewModel : ObservableObject
     private static readonly (double Start, double End, string Label)[] StageRanges =
     {
         (0.00, 0.00, "等待中"),              // Queued
-        (0.00, 0.20, "1/4 视频分析中"),      // SceneDetect
-        (0.20, 0.80, "2/4 语音识别中"),      // Asr
-        (0.80, 0.95, "3/4 AI 语义分析中"),   // AiAnalyze
-        (0.95, 1.00, "4/4 边界优化中"),      // Finalize
+        (0.00, 0.15, "1/5 视频分析中"),      // SceneDetect
+        (0.15, 0.55, "2/5 语音识别中"),      // Asr
+        (0.55, 0.68, "3/5 AI 语义分析中"),   // AiAnalyze
+        (0.68, 0.74, "4/5 边界优化中"),      // Finalize
+        (0.74, 1.00, "5/5 台词精识别中"),    // Refine（阿里逐分镜）
         (1.00, 1.00, "处理完成"),            // Completed
         (1.00, 1.00, "处理失败"),            // Failed
     };
@@ -174,6 +177,7 @@ public partial class ImportViewModel : ObservableObject
         ASRService asrService,
         AIAnalysisService aiAnalysis,
         BoundaryOptimizerService boundaryOptimizer,
+        Services.Dubbing.SegmentReRecognizer reRecognizer,
         AppSettings settings,
         ILogger<ImportViewModel> logger)
     {
@@ -183,6 +187,7 @@ public partial class ImportViewModel : ObservableObject
         _asrService = asrService;
         _aiAnalysis = aiAnalysis;
         _boundaryOptimizer = boundaryOptimizer;
+        _reRecognizer = reRecognizer;
         _settings = settings;
         _logger = logger;
     }
@@ -474,10 +479,13 @@ public partial class ImportViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            var msg = ex.Message;
-            aiErrorMessage = msg.Contains("API Key") || msg.Contains("未配置")
-                ? "AI 分析跳过：请先在「设置」中配置 API Key"
-                : "AI 分析失败：" + msg;
+            // 走统一翻译：未配置 Key → 跳过提示；其余（含免费额度耗尽 403 / 欠费 / 限流）翻成准确人话，
+            // 不再用脆弱的 Contains("API Key") 子串判断把免费额度 403 误报成「AI 分析失败：<英文>」。
+            var friendly = ExceptionTranslator.ToUserMessage(ex);
+            aiErrorMessage = ex is MixCut.Services.AI.AIProviderException
+                { Kind: MixCut.Services.AI.AIProviderErrorKind.ApiKeyNotConfigured }
+                ? "AI 分析跳过：" + friendly
+                : "AI 分析失败：" + friendly;
         }
         ReportVideoStage(videoId, VideoStage.AiAnalyze, 1.0);
 
@@ -497,6 +505,14 @@ public partial class ImportViewModel : ObservableObject
             await db.SaveChangesAsync();
             ReportVideoStage(videoId, VideoStage.Finalize, 0.5);
             await GenerateSegmentThumbnailsAsync(video.Id, video.LocalPath, db);
+            ReportVideoStage(videoId, VideoStage.Finalize, 1.0);
+
+            // Step 6: 逐分镜阿里精识别台词（对齐 mac「阿里 ASR 混合架构」）。
+            // whisper 整片转写只用于切分镜的时间戳；分镜显示台词由 Paraformer 各段独立重识别，
+            // 短音频天生准、带标点。无千问 key 时优雅跳过（保留 whisper 文本，不报错）。
+            CheckCancelled(videoId);
+            await ReidentifySegmentTextsAsync(video, db, videoId);
+
             video.Status = VideoStatus.Completed;
             video.ErrorMessage = null;
             ReportVideoStage(videoId, VideoStage.Completed, 1.0);
@@ -510,6 +526,67 @@ public partial class ImportViewModel : ObservableObject
 
         await db.SaveChangesAsync();
         _logger.LogInformation("分析完成: video={Name}, status={Status}", video.Name, video.Status);
+    }
+
+    /// <summary>
+    /// 逐分镜用阿里 Paraformer 重识别台词，覆盖 whisper 词拼接文本（对齐 mac reidentifySegmentTexts）。
+    /// 每段按自己时间范围切音频独立识别 —— 短音频时间戳天生准、带标点，不受整片漂移影响。
+    /// 无千问 key 时整段跳过（保留 whisper 文本，不报错）；单段失败保留该段原文，不中断整体导入。
+    /// </summary>
+    private async Task<(int ok, int fail)> ReidentifySegmentTextsAsync(
+        Video video, MixCutDbContext db, Guid videoId, CancellationToken ct = default)
+    {
+        if (!_reRecognizer.IsAvailable)
+        {
+            _logger.LogInformation("[ReidDiag] 跳过阿里精识别（未配千问 key），保留 whisper 文本 video={Name}", video.Name);
+            return (0, 0);
+        }
+
+        // 从 db 直接查（CreateSegments 走 db.Segments.Add + MergeShortSegments，video.Segments 导航未必已同步）。
+        var segs = await db.Segments.Where(s => s.VideoId == video.Id)
+            .OrderBy(s => s.StartFrame).ToListAsync(ct);
+        if (segs.Count == 0) return (0, 0);
+
+        var fps = video.Fps > 0 ? video.Fps : 30.0;
+        int ok = 0, fail = 0;
+        for (var i = 0; i < segs.Count; i++)
+        {
+            CheckCancelled(videoId);
+            ct.ThrowIfCancellationRequested();
+            var seg = segs[i];
+            try
+            {
+                // 帧为边界真值 → 秒（对齐 mac start=startFrame/fps），比派生的 StartTime 缓存更稳。
+                var text = await _reRecognizer.RecognizeAsync(
+                    video.LocalPath, seg.StartFrame / fps, seg.EndFrame / fps, ct);
+                if (!string.IsNullOrWhiteSpace(text)) { seg.Text = text; ok++; }
+                else fail++;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                fail++;
+                _logger.LogWarning("[ReidDiag] 分镜 {Idx} 精识别失败，保留原文: {Msg}", i + 1, ex.Message);
+            }
+            ReportVideoStage(videoId, VideoStage.Refine, (i + 1.0) / segs.Count);
+        }
+
+        await db.SaveChangesAsync(ct);
+        _logger.LogInformation("[ReidDiag] 阿里逐分镜精识别完成 video={Name} 成功={Ok} 失败={Fail} 共={Total}",
+            video.Name, ok, fail, segs.Count);
+        return (ok, fail);
+    }
+
+    /// <summary>
+    /// 对已分析完成的视频，手动重跑一遍阿里逐分镜精识别（自测入口；也可作为未来「整片重识别」按钮的后端）。
+    /// 独立开 db，加载视频后走与导入相同的核心逻辑。返回 (成功段数, 失败段数)。
+    /// </summary>
+    public async Task<(int ok, int fail)> ReidentifyVideoAsync(Guid videoId, CancellationToken ct = default)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId, ct);
+        if (video is null) return (0, 0);
+        return await ReidentifySegmentTextsAsync(video, db, videoId, ct);
     }
 
     /// <summary>从 AI 结果创建分镜。</summary>

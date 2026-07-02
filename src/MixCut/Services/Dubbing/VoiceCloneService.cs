@@ -65,7 +65,8 @@ public sealed class VoiceCloneService
         if (!resp.IsSuccessStatusCode)
         {
             _logger.LogError("[DubDiag] 声音克隆注册失败 HTTP {Code}: {Body}", (int)resp.StatusCode, Trunc(text));
-            throw new DubException($"声音克隆失败：HTTP {(int)resp.StatusCode} {Trunc(text)}");
+            // 原始英文体只进日志（上一行）；给用户看的走统一分类器翻译成人话。
+            throw new DubException("声音克隆失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly($"HTTP {(int)resp.StatusCode} {text}"));
         }
 
         using var doc = JsonDocument.Parse(text);

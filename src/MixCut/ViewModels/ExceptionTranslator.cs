@@ -21,6 +21,8 @@ public static class ExceptionTranslator
         AIProviderException ai => ai.Message,
         // FFmpeg 异常的 Message 含 "exit {code}: {stderr}"，绝不能直接给用户 —— 翻成人话。
         FFmpegException => "视频处理失败，文件可能损坏或格式不支持，请换一个视频重试",
+        // DubException 的 Message 已由各配音调用处翻成人话（走 ApiErrorClassifier / 本就是中文），直接用。
+        MixCut.Services.Dubbing.DubException => ex.Message,
         OperationCanceledException => "已取消",
         // 其余（含 whisper 的 ExitCode 异常、JsonException 等）统一兜底，技术细节只在日志里。
         _ => "处理失败，请重试（详情见日志）",

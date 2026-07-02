@@ -257,6 +257,28 @@ public sealed partial class DubVariantItemViewModel : ObservableObject
         OnPropertyChanged(nameof(IsPlaying));
     }
 
+    /// <summary>把这条配音导出到本地文件（用系统播放器试听 / 归档）。</summary>
+    [RelayCommand]
+    private void Export()
+    {
+        if (!HasAudio) return;
+        var seg = _inspector.Segment;
+        var idx = seg is null ? "seg" : (string.IsNullOrEmpty(seg.SegmentIndex) ? "seg" : seg.SegmentIndex);
+        var dlg = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "导出配音到本地",
+            FileName = $"配音_{idx}_{VariantLetter}.m4a",
+            Filter = "音频文件 (*.m4a)|*.m4a",
+            AddExtension = true,
+        };
+        if (dlg.ShowDialog() != true) return;
+        var written = _dubbing.ExportDubAudio(_dub, dlg.FileName);
+        if (written != null)
+        {
+            MixCut.Views.Components.ToastService.Show("配音已导出到本地", MixCut.Views.Components.ToastStyle.Success);
+        }
+    }
+
     [RelayCommand]
     private async Task DeleteAsync()
     {

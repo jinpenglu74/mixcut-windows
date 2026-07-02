@@ -34,6 +34,10 @@ public class FfmpegFramePlayer : Image
     private Thread? _audioReader;
     private IWavePlayer? _audioOut;
     private BufferedWaveProvider? _audioBuf;
+    // 配音换声覆盖（Point 4 方案预览换声）：非空时下次 Open 用「克隆配音 + 分离 BGM」替代原声。
+    // dub 从头播、bgm seek 到分镜起点（=_clipStart）。见 SetAudioOverride。
+    private string? _dubAudioPath;
+    private string? _bgmAudioPath;
     private volatile bool _stop;
     private volatile bool _paused;
     private int _w, _h;
@@ -163,6 +167,18 @@ public class FfmpegFramePlayer : Image
         }
     }
 
+    /// <summary>
+    /// 配音换声覆盖（Point 4）：设置后下次 <see cref="Open"/> 播放时用「克隆配音 <paramref name="dubPath"/>
+    /// + 分离背景乐 <paramref name="bgmPath"/>」替代原声（dub 从头、bgm seek 到分镜起点）。
+    /// 两者传 null 即清除、恢复原声。对齐 Mac SegmentInlinePlayer 选中变体换声。
+    /// 仅影响下次 Open；若需立即生效需调用方在设置后重新 Open（方案预览在播放前设置，天然满足）。
+    /// </summary>
+    public void SetAudioOverride(string? dubPath, string? bgmPath)
+    {
+        _dubAudioPath = dubPath;
+        _bgmAudioPath = bgmPath;
+    }
+
     /// <summary>启动音频管道 → NAudio 声卡输出（声卡按 44.1kHz 自然定速）。无音轨视频会静默，不影响视频。</summary>
     private void StartAudio(string path, double start, double dur)
     {
@@ -175,7 +191,23 @@ public class FfmpegFramePlayer : Image
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            foreach (var a in FramePipeArgs.Audio(path, start, dur <= 0 ? 36000 : dur))
+            // 配音换声预览：有克隆配音则 mute 原声、改播「配音 + BGM(seek 到分镜起点)」（Point 4）。
+            var useDub = !string.IsNullOrEmpty(_dubAudioPath) && File.Exists(_dubAudioPath);
+            var effDur = dur <= 0 ? 36000 : dur;
+            string[] audioArgs;
+            if (useDub)
+            {
+                var bgm = !string.IsNullOrEmpty(_bgmAudioPath) && File.Exists(_bgmAudioPath) ? _bgmAudioPath : null;
+                audioArgs = FramePipeArgs.AudioDubBgm(_dubAudioPath!, bgm, start, effDur);
+                Serilog.Log.Information(
+                    "[DubPreviewDiag] 换声预览 dub={Dub} bgm={HasBgm} bgmStart={Start:F2} dur={Dur:F2}",
+                    Path.GetFileName(_dubAudioPath), bgm is not null, start, effDur);
+            }
+            else
+            {
+                audioArgs = FramePipeArgs.Audio(path, start, effDur);
+            }
+            foreach (var a in audioArgs)
             {
                 psi.ArgumentList.Add(a);
             }
