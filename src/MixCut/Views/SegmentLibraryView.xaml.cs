@@ -233,7 +233,8 @@ public partial class SegmentLibraryView : UserControl, IProjectView
         catch (Exception ex)
         {
             Serilog.Log.Error(ex, "[SegmentLibraryView.OnCombineSchemeClick] 异常: {Message}", ex.Message);
-            Components.ToastService.Show($"组合失败: {ex.Message}", Components.ToastStyle.Warning);
+            // §红线：ex.Message 可能含原始异常文本 —— 翻成人话（AI 异常本就是中文，FFmpeg/其它走兜底）。
+            Components.ToastService.Show($"组合失败: {MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex)}", Components.ToastStyle.Warning);
         }
     }
 

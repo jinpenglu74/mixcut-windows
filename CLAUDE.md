@@ -71,7 +71,7 @@ MixCut Windows 版 —— macOS 原生应用 [MixCut](https://github.com/RoshanG
 | Windows 10 1809 之前 | n/a | n/a | ❌ 不支持（.NET 8 硬性下限） |
 | Windows 7 / 8 / 8.1 | n/a | n/a | ❌ 不支持 |
 | Windows ARM64 | n/a | n/a | ❌ 暂不支持 |
-| Windows 10/11 N 版（不含 Media Pack） | n/a | n/a | ⚠️ 导出/缩略图走自带 ffmpeg 不受影响；但当前**预览仍走 WPF MediaElement（依赖系统编解码器）**，N 版 / 缺 HEVC 扩展机器会预览失败 —— 见 §兼容性总纲，预览统一到 ffmpeg 后才算真正达标 |
+| Windows 10/11 N 版（不含 Media Pack） | n/a | n/a | ✅ 导出/缩略图/**预览**均走自带 ffmpeg（v0.7.x 预览已统一到 `FfmpegFramePlayer` 进程外裸帧管道，不再依赖系统编解码器），N 版 / 缺 HEVC 扩展机器同样可用；有 N 版机时仍建议真机 e2e 兜底 |
 
 > .NET 8 官方最低支持 Win 10 1809。低于此版本系统市占率 < 1%，不在支持范围。
 
@@ -85,10 +85,10 @@ MixCut Windows 版 —— macOS 原生应用 [MixCut](https://github.com/RoshanG
 | VC++ Redistributable (2015-2022) | ✅ publish/bin/ 已含 6 个 VC Runtime DLL | ❌ 不要求用户装 VC++ Redist |
 | OpenMP runtime (vcomp140) | ✅ publish/bin/ 已含 | ❌ 不要求用户装 Office |
 | FFmpeg / ffprobe / whisper-cli | ✅ publish/bin/ 已含 | ❌ 不要求用户装 FFmpeg |
-| 视频解码（HEVC/VP9/AV1 等） | ✅ 导出/缩略图走自带 ffmpeg；⚠️ 预览待统一到 ffmpeg（见 §兼容性总纲） | ❌ 不要求用户装系统编解码器 / HEVC 扩展 / VLC |
+| 视频解码（HEVC/VP9/AV1 等） | ✅ 导出/缩略图/预览**全部**走自带 ffmpeg（v0.7.x 起预览也已统一，见 §兼容性总纲） | ❌ 不要求用户装系统编解码器 / HEVC 扩展 / VLC |
 | Whisper 语音模型（按需下载） | ⚠️ 首次用 ASR 时下载 | ✅ 应用内有下载进度 UI + 国内镜像源 |
 
-> 注：v0.6.1 已移除 LibVLC（NuGet 包 + VlcBootstrap.cs + 365 plugins，见 commit `af0ddd7`）。当前不再随包分发 LibVLC，预览暂回退到 MediaElement —— 这是 §兼容性总纲待修项。
+> 注：v0.6.1 已移除 LibVLC（NuGet 包 + VlcBootstrap.cs + 365 plugins，见 commit `af0ddd7`）；v0.7.x 预览统一到自带 ffmpeg 进程外裸帧管道（`FfmpegFramePlayer`，与导出同源、不碰系统编解码器）。§兼容性总纲的「预览掉队」待修项**已闭环**。
 
 发版前自检 grep 关键字：`[VcRuntimeDiag] all 6 VC Runtime DLLs present`、`[EnvDiag] pass=True`。
 
@@ -100,7 +100,7 @@ MixCut Windows 版 —— macOS 原生应用 [MixCut](https://github.com/RoshanG
 - [ ] **构建机自验**：远端 publish + 启动 + grep 启动期诊断日志 `[VcRuntimeDiag]` `[EnvDiag]` 全绿
 - [ ] **干净 Win 10 e2e**（**有干净机时必跑**）：装安装包 → 启动 → 完整跑导入 → ASR → 切分 → 方案生成 → 导出 → 用系统播放器播一遍
 - [ ] **干净 Win 11 e2e**（**有干净机时必跑**）：同上
-- [ ] **N 版 Win 10/11 e2e**（**有 N 版机时必跑**）：N 版不含 Windows Media Foundation，确认自带 ffmpeg 解码栈不撞 mfplat.dll（**预览统一到 ffmpeg 后此项才算真正达标**；当前预览仍走 MediaElement，N 版必失败）
+- [ ] **N 版 Win 10/11 e2e**（**有 N 版机时必跑**）：N 版不含 Windows Media Foundation，确认导出/缩略图/**预览**（v0.7.x 起均走自带 ffmpeg）都不撞 mfplat.dll、正常出画
 - [ ] **无干净机时**：dumpbin 静态分析 + 构建机用「新用户账号 + 不继承 VC++ Redist」模拟干净环境跑
 
 ### 已知容易撞双平台兼容性的雷区（动相关代码时必查）
@@ -110,8 +110,8 @@ MixCut Windows 版 —— macOS 原生应用 [MixCut](https://github.com/RoshanG
 | **VC Runtime 缺失** | 干净机启动崩，`ExitCode=-1073741515` (`STATUS_DLL_NOT_FOUND`) | v0.3.0 沉淀：必带 6 个 VC Runtime DLL |
 | **vcomp140 缺失** | ggml-cpu / 部分 OpenMP 加速代码崩 | v0.4.0 沉淀：必带 vcomp140 + concrt140 |
 | **ffmpeg codec-private 选项** | N 卡 / I 卡 / A 卡 不同 GPU 路径行为不一致 | v0.4.0 沉淀：构建机只能测一种 GPU，其它 GPU 路径需用户实测 |
-| **预览依赖系统编解码器** ⚠️ | HEVC / iPhone「高效」格式 hover 预览报 `0xC00D109B 该格式可能需要系统媒体编解码支持` | **当前 InlineVideoPlayer 仍用 WPF MediaElement，违反 §兼容性总纲**；待统一到自带 ffmpeg 解码 —— 全工程唯一掉队的一环 |
-| **WPF MediaElement seek 闪帧** | hover 播放分镜先闪视频第 0 秒 | v0.3.0 行为；v0.6.0 曾用 LibVLC 根治但引入卡死，v0.6.1 退回 MediaElement 接受闪帧；最终随「预览统一到 ffmpeg」一并解决 |
+| ~~预览依赖系统编解码器~~ ✅ 已解决 | （历史）HEVC / iPhone「高效」格式 hover 预览曾报 `0xC00D109B 该格式可能需要系统媒体编解码支持` | v0.7.x 起 `InlineVideoPlayer` 已改走自带 ffmpeg（`FfmpegFramePlayer` 进程外裸帧管道），与导出同源、不碰系统编解码器 —— 遗留架构不一致已消除 |
+| ~~WPF MediaElement seek 闪帧~~ ✅ 已解决 | （历史）hover 播放分镜先闪视频第 0 秒 | v0.3.0 行为；v0.6.0 曾用 LibVLC 根治但引入卡死→v0.6.1 退回 MediaElement 接受闪帧；v0.7.x 预览统一到自带 ffmpeg 裸帧管道后彻底消除（首帧就绪前不显示播放层，见 §H） |
 | **Windows SmartScreen 拦截** | 首次启动「Windows 已保护你的电脑」拦 | 长期：买 EV 代码签名证书；短期：用户点「仍要运行」 |
 | **antivirus 误报** | whisper-cli / ffmpeg 被识为可疑 | 短期容忍；发版 notes 提示用户加白名单 |
 | **Win 10 1809 之前** | .NET 8 安装失败 | 不在支持范围，安装包不主动检查（用户极少） |
@@ -150,11 +150,13 @@ MixCut Windows 版 —— macOS 原生应用 [MixCut](https://github.com/RoshanG
 | **预览播放** | `0xC00D109B 该格式可能需要系统媒体编解码支持`（HEVC / iPhone「高效」格式） | ❌ 违反推论 2：hover 预览还在用 WPF MediaElement → Windows Media Foundation，赌用户装了 HEVC 扩展。这是**全工程唯一**还依赖系统编解码器的一环 | 预览改走自带 FFmpeg 解码（和导出同源），与剪映 / Premiere / DaVinci 同架构 |
 | **导出失败** | `Unrecognized option 'allow_sw'` exit -1414549496 | ✅ 自带 ffmpeg 方向没错，是**用户在跑 v0.4.1 之前的旧版**；当前代码早删该选项（`FFmpegRunner.cs` 只剩注释） | 引导用户更新到最新版即可；反过来印证「自带引擎 + 同源」方向正确 |
 
-**关键洞察**：导出和缩略图能正常处理 HEVC，**正因为**它们走自带 FFmpeg；预览之所以崩，**正因为**它是唯一掉队、还在依赖系统编解码器的一环。把它拉回总纲即可根治——这不是「要不要做」，是消除一处遗留的架构不一致。
+**关键洞察**：导出和缩略图能正常处理 HEVC，**正因为**它们走自带 FFmpeg；预览之所以曾崩，**正因为**它当时是唯一掉队、还在依赖系统编解码器的一环。把它拉回总纲即根治——这不是「要不要做」，是消除一处遗留的架构不一致。
 
-### 历史教训（这一环为什么会掉队）
+> ✅ **现状（v0.7.x 起，此结论已落地）**：预览已改走自带 ffmpeg 进程外裸帧管道（`FfmpegFramePlayer` + `InlineVideoPlayer`），与导出/缩略图同源，全工程再无任何一环依赖系统编解码器。上面这段是「拿总纲量出问题→落地修复」的完整范例，保留作教学，不再是未修项。
 
-v0.6.0 曾用 LibVLCSharp 替换 MediaElement（**方向对**：自带解码引擎），但实现写错——每次 hover 都重建整个 VLC 生命周期，UI 线程同步阻塞卡死 0.5-2s；v0.6.1 退回 MediaElement「消灭卡死、接受不能预览」，**为了修一个实现 bug，退回了违反总纲的系统编解码方案**，把兼容债留到今天。教训：**实现 bug 不该用「放弃正确架构」来修**——卡死的根因是「per-hover 重建」，不是「自带引擎」本身。
+### 历史教训（这一环为什么曾经掉队）
+
+v0.6.0 曾用 LibVLCSharp 替换 MediaElement（**方向对**：自带解码引擎），但实现写错——每次 hover 都重建整个 VLC 生命周期，UI 线程同步阻塞卡死 0.5-2s；v0.6.1 退回 MediaElement「消灭卡死、接受不能预览」，**为了修一个实现 bug，退回了违反总纲的系统编解码方案**，把兼容债留了一版。**v0.7.x 最终按正确姿势收口**：自带 ffmpeg 但用**常驻帧泵 + 按帧节流**（不是 per-hover 重建整个引擎），既自带解码又不卡死。教训印证：**实现 bug 不该用「放弃正确架构」来修**——卡死的根因是「per-hover 重建」，不是「自带引擎」本身。
 
 ### 反模式（违反总纲即不达标）
 
@@ -165,45 +167,46 @@ v0.6.0 曾用 LibVLCSharp 替换 MediaElement（**方向对**：自带解码引�
 
 ---
 
-## 跨机器开发工作流（关键）
+## 本地开发工作流（关键）
 
-代码在 **Mac** 上编写，构建/运行/测试在一台 **Windows 电脑**上进行，两机通过 Tailscale 组网。
+**代码编写、构建、运行、测试全部在这台 Windows 电脑上本地进行**（不再走 Mac 编码 + SSH 到 Windows 的旧工作流）。
+所有工具、命令、日志都在本机直接操作，无需 Tailscale / SSH / sync。
 
-- **Windows 构建机**：`mlamp@100.112.4.71`（Tailscale，主机名 `laptop-rbiugf7r`）
-- **SSH 密钥**：`~/.ssh/mixcut_win`（免密）
-- **Windows 项目目录**：`C:\Users\mlamp\MixCutWindows`
+- **项目目录**：`D:\Dev\mixcut-windows`（即当前工作目录）
 - **.NET SDK**：`C:\Users\mlamp\dotnet\dotnet.exe`（8.0.x，未加入系统 PATH，用全路径调用）
+- **主 shell**：PowerShell（另有 Bash 工具可跑 POSIX 脚本）
 
-### 同步代码到 Windows
+### 构建（首选构建脚本，绕开 WPF MarkupCompile 卡死）
 
-```bash
-scripts/sync.sh
+WPF `dotnet build/publish` 会不定期卡死在 MarkupCompile（详见记忆 `wpf-build-hang-fix`）。
+`MixCut.csproj` 已加 `<AlwaysCompileMarkupFilesInSeparateDomain>false</AlwaysCompileMarkupFilesInSeparateDomain>` 根治，
+仍以构建脚本兜底（清 obj/bin + 关编译服务器 + 超时重试）：
+
+```powershell
+# Debug 构建（UI/逻辑快速迭代）
+scripts\win-build.ps1
+# self-contained 发布（更新 publish\ 下的可运行 EXE）
+scripts\win-build.ps1 -Publish
 ```
 
-### 远程构建（在 Windows 上执行）
+脚本卡死时的逃生阀（直接前台调 dotnet + 清整个 obj/bin）见记忆 `wpf-build-hang-fix`。
+纯语法/类型检查可直接 `dotnet build src\MixCut\MixCut.csproj -c Debug`（本机是 Windows，无需旧 Mac 交叉编译的 `-p:EnableWindowsTargeting=true` 开关）。
 
-```bash
-ssh -i ~/.ssh/mixcut_win -o IdentitiesOnly=yes mlamp@100.112.4.71 \
-  'C:\Users\mlamp\dotnet\dotnet.exe build C:\Users\mlamp\MixCutWindows\MixCut.sln'
+### 运行 + 自验证
+
+改完 → 构建 → **确认 publish\MixCut.exe（或 bin\Debug 下 EXE）的 LastWriteTime 晚于本次改动** → 启动 → 读日志实证。
+详见 §「自我验证铁律」与记忆 `mixcut-ui-iteration-workflow`（截图助手在 `.uiwork\`）、`stale-publish-verify-before-user-test`。
+
+```powershell
+Get-Process MixCut -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Process D:\Dev\mixcut-windows\publish\MixCut.exe   # 或 src\MixCut\bin\Debug\net8.0-windows\MixCut.exe
+Start-Sleep -Seconds 12   # 等恢复上次项目 + 缩略图
 ```
-
-> SSH 默认 shell 为 PowerShell。复杂命令用 `powershell -NoProfile -EncodedCommand <base64>`
-> （UTF-16LE 编码）避免多层引号转义问题。stderr 会被包成 CLIXML，属正常噪音。
-
-### 本机 Mac 上 syntax-check 构建（SSH 不通时备用）
-
-Mac 上跑了 `brew install dotnet`，可以做语法/类型检查（无法生成可运行 EXE，因为是 WPF Windows 专属）：
-
-```bash
-dotnet build src/MixCut/MixCut.csproj -c Release -nologo -v quiet -p:EnableWindowsTargeting=true
-```
-
-注意 `-p:EnableWindowsTargeting=true` 必填，否则报 NETSDK1100。这个只能验证编译过，跑不起来 —— 实际 publish + 测试还是要走 Windows 机器。
 
 ### 读取运行日志
 
-应用日志写入 Windows 端 `%APPDATA%\MixCut\logs\mixcut-<date>.log`（Serilog 按天滚动）。
-排查问题时 SSH 进去读该文件。
+应用日志写入 `%APPDATA%\MixCut\logs\mixcut-<date>.log`（Serilog 按天滚动，同一天累积 —— 过滤最后一个 `MixCut 启动` 标记之后的行）。
+排查问题直接读该文件：`Get-Content <最新log> | Select-String -Pattern "<诊断 tag>"`。
 
 ## 架构（MVVM + Service Layer，对齐 macOS 版）
 
@@ -290,10 +293,10 @@ macOS → Windows 技术映射：SwiftUI→WPF、SwiftData→EF Core 8 + SQLite�
 
 ### 标准自验证流水线（已铺好，无脑跑）
 
-1. `dotnet build src/MixCut/MixCut.csproj -c Release -p:EnableWindowsTargeting=true` 过 → `scripts/sync.sh` → SSH 远端 `dotnet publish`
-2. SSH 启动 EXE：`Stop-Process MixCut → Start-Process publish\MixCut.exe → Start-Sleep 12`
+1. 本地构建：`scripts\win-build.ps1`（Debug 迭代）或 `scripts\win-build.ps1 -Publish`（发布） → 过
+2. 启动 EXE：`Stop-Process MixCut → Start-Process publish\MixCut.exe（或 bin\Debug 下 EXE）→ Start-Sleep 12`
 3. 应用按 `AppSettings.LastNavItem` 自动恢复到上次的视图 → 触发该视图的诊断日志
-4. SSH 读日志关键字：`Get-Content <最新log> | Select-String -Pattern "<诊断 tag>"`
+4. 读日志关键字：`Get-Content <最新log> | Select-String -Pattern "<诊断 tag>"`
 5. **看到具体计数/状态全对，且无 WRN/ERR 关联到刚改的功能，才算修好**
 
 ### 强制规则
@@ -389,7 +392,7 @@ MixCut 面向广告投放团队，目标是**像剪映/Final Cut Pro 一样丝�
 
 ### 9. 发布工作流
 
-- **publish** = 跑 `dotnet publish` 把 EXE 更新到 `C:\Users\mlamp\MixCutWindows\publish\`，
+- **publish** = 跑 `scripts\win-build.ps1 -Publish`（内部 `dotnet publish`）把 EXE 更新到 `D:\Dev\mixcut-windows\publish\`，
   是开发循环的常规操作，每次代码改完自动跑（默认行为）
 - **发版** = GitHub Release / Gitee Release / 打 tag / 制作安装包，需用户明确确认
 - 两者不要混淆
@@ -406,7 +409,7 @@ MixCut 面向广告投放团队，目标是**像剪映/Final Cut Pro 一样丝�
 2. `git tag -a vX.Y.Z -m "..."`
 3. `git push origin main && git push origin vX.Y.Z`（推 GitHub）
 4. `git push gitee main && git push gitee vX.Y.Z`（推 Gitee，**不要忘**）
-5. Windows 端 `dotnet publish` → `Compress-Archive` 打 `MixCut-vX.Y.Z-win-x64.zip` → scp 回 Mac
+5. 本机 `scripts\win-build.ps1 -Publish` → `Compress-Archive` 打 `MixCut-vX.Y.Z-win-x64.zip`（产物就在本机，无需回传）
 6. `gh release create vX.Y.Z <zip> --repo RoshanGH/mixcut-windows --title ... --notes ...`
 7. **Gitee Release**：用 Open API（需 `GITEE_TOKEN` 环境变量，从 https://gitee.com/profile/personal_access_tokens 创建）
    ```bash
@@ -448,7 +451,7 @@ MixCut 面向广告投放团队，目标是**像剪映/Final Cut Pro 一样丝�
 
 #### 发版前**干净环境**自测铁律（v0.3.0 事故沉淀 ⚠️）
 
-构建机（`mlamp@100.112.4.71`）装了 VS / .NET SDK / VC++ Redist，**用它自测过 ≠ 用户机能跑**。
+开发机（本机，即用来构建/自测的这台 Windows）装了 VS / .NET SDK / VC++ Redist，**用它自测过 ≠ 用户机能跑**。
 v0.3.0 因此踩了 `whisper-cli.exe` 缺 VCRUNTIME140.dll 的坑，用户机器直接报 `ExitCode=-1073741515` (`STATUS_DLL_NOT_FOUND` / `0xC0000135`)。
 
 发版前必查清单：
@@ -494,7 +497,7 @@ v0.4.0 因此踩了 `-allow_sw 0` 的坑 —— gyan.dev ffmpeg 8.1.1 起把这�
 |---|---|---|
 | 1 | **「装完即跑」** —— 不管目标机器原本什么样，安装包装上就能用全部核心功能 | 「不管它本身是什么样子，它只要用我的安装包安装了这个东西，要保证这个东西能正常的运行」|
 | 2 | **真正自验证再让用户测** —— 用户拒绝当第一测试者 | 「首帧黑屏 这个问题你每次改完自己能不能 验证 你已经让我验证 很多了」|
-| 3 | **构建机不是用户机器** —— 远程构建机能跑 ≠ 用户机器能跑 | 「你自己脸上 windows 服务器 测试不行吗」（提醒可用构建机做静态分析 + 实跑） |
+| 3 | **开发机不是用户机器** —— 本机（装了 SDK/VC++ Redist）能跑 ≠ 干净用户机器能跑 | 「你自己脸上 windows 服务器 测试不行吗」（提醒本机可做静态分析 + 实跑自测） |
 | 4 | **依赖下载源必须国内可访问** —— 没 GitHub raw / HuggingFace / gyan.dev 直链 | 「我说的是这个软件安装好了以后，我去下载它的依赖，这些依赖要用国内的链接去下载」|
 | 5 | **没国内源就不做依赖下载化** —— 不要为了瘦身把功能搞复杂 | 「没有的话那就不做这个功能了，那就依然用现在的打包方式」|
 | 6 | **Gitee 当独立发布渠道** —— 不引导用户去 GitHub | 「你就当 两个是独立 发布 该怎么写怎么写」|
@@ -508,11 +511,11 @@ v0.4.0 因此踩了 `-allow_sw 0` 的坑 —— gyan.dev ffmpeg 8.1.1 起把这�
 | v0.4.0 | N 卡机器导出 0/30 全失败 | `exit -1414549496` `0xABABABAB Unrecognized option 'allow_sw'` | `FFmpegRunner` 加 `-allow_sw 0`，gyan.dev ffmpeg 8.1.1 移除该选项；**构建机选 QSV 路径根本走不到 NVENC 死代码**，潜伏 v0.3.x 全期 | v0.4.1 删 NVENC `-allow_sw 0`|
 | v0.4.x | 分析完分镜库没分镜，重启才有 | n/a | `MainWindow._viewLastLoadedProjectId` 缓存「同 project 不重 LoadProject」，性能优化把「数据变更要刷新」case 搞坏 | v0.5.0 `ImportViewModel.SegmentsChanged` 事件 + `MainWindow.OnSegmentsChanged` 失效缓存 |
 
-### C. 容易被构建机隐藏的隐患（关键盲点）
+### C. 容易被开发机隐藏的隐患（关键盲点）
 
-构建机 `mlamp@100.112.4.71` 是 **Win11 Pro Build 26200**，装了 .NET SDK + VC++ Redist + 集成显卡（Intel 核显）。**这些是构建机有但干净用户机可能没有的东西**：
+开发机（本机）是 **Win11 Pro Build 26200**，装了 .NET SDK + VC++ Redist + 集成显卡（Intel 核显）。**这些是开发机有但干净用户机可能没有的东西**：
 
-| 构建机有 | 用户机可能没有 | 不在构建机自测能踩的坑 |
+| 开发机有 | 用户机可能没有 | 不在开发机自测能踩的坑 |
 |---|---|---|
 | Visual C++ Redistributable 14.x | 没装过 VS / VC++ Redist 的全新 Win | VC Runtime DLL 全部缺失（v0.3.0 坑）|
 | Office / Excel | 不装 Office 的纯净系统 | `vcomp140.dll` 等 OpenMP runtime 缺失（v0.4.0 坑）|
@@ -551,7 +554,7 @@ SlicesPerDisk=1
 输出：`Setup.exe`（stub ~2 MB）+ `Setup-1.bin` (~88 MB) + `Setup-2.bin` (~11 MB)
 用户下 3 个文件放同目录双击 setup.exe 即装。
 
-**`scripts/sync.sh` 必须含 `installer/` 和 `scripts/`**（否则 .iss 不会被同步到构建机，iscc 编译报「找不到文件」）。
+打安装包时确认 `installer/`（含 `.iss`）就在本机项目目录下，`iscc` 直接编译本地路径即可（本地开发已无同步环节；旧的 `scripts/sync.sh` 跨机同步流程已废弃）。
 
 ### F. 「数据变更 → UI 刷新」通道清单（不要再破坏）
 

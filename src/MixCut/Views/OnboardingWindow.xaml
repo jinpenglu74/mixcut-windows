@@ -22,7 +22,8 @@
                            HorizontalAlignment="Center" />
                 <TextBlock Text="AI 驱动的广告视频混剪工具" FontSize="13"
                            Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,18" />
-                <Border Background="#F4F5F7" CornerRadius="12" Padding="18">
+                <Border Background="#F4F5F7" CornerRadius="12" Padding="18"
+                        BorderBrush="#E5E5E7" BorderThickness="1">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
                             <TextBlock Text="✂" FontSize="14" Foreground="#1D6BE5"

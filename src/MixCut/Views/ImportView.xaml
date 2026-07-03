@@ -46,24 +46,31 @@
             </Grid>
         </Border>
 
-        <!-- 拖拽区 -->
-        <Border DockPanel.Dock="Top" x:Name="DropZone" BorderThickness="2"
-                CornerRadius="14" Padding="0,28" Margin="0,0,0,16">
-            <Border.BorderBrush>
-                <SolidColorBrush x:Name="DropBorderBrush" Color="#CCCCCC" />
-            </Border.BorderBrush>
+        <!-- 拖拽区：虚线边框（剪映式「可投放」视觉语言）。边框走 Rectangle StrokeDashArray，
+             Stroke 仍用同名 DropBorderBrush、底色仍在 Border 上 —— 拖拽 hover 高亮逻辑（code-behind）不变。 -->
+        <Border DockPanel.Dock="Top" x:Name="DropZone"
+                CornerRadius="14" Margin="0,0,0,16">
             <Border.Background>
                 <SolidColorBrush x:Name="DropBackgroundBrush" Color="#FAFAFA" />
             </Border.Background>
-            <StackPanel HorizontalAlignment="Center">
-                <TextBlock x:Name="DropIcon" Text="⬇" FontSize="36" Foreground="#999"
-                           HorizontalAlignment="Center" />
-                <TextBlock x:Name="DropMainText" Text="拖拽视频文件到此处" FontSize="14" FontWeight="SemiBold"
-                           HorizontalAlignment="Center" Margin="0,8,0,4" />
-                <TextBlock Text="支持 MP4 / MOV / AVI / M4V / MKV"
-                           FontSize="11" Foreground="#999"
-                           HorizontalAlignment="Center" />
-            </StackPanel>
+            <Grid MinHeight="134">
+                <Rectangle RadiusX="14" RadiusY="14" Margin="1"
+                           StrokeThickness="2" StrokeDashArray="4 3" StrokeDashCap="Round"
+                           SnapsToDevicePixels="True">
+                    <Rectangle.Stroke>
+                        <SolidColorBrush x:Name="DropBorderBrush" Color="#CCCCCC" />
+                    </Rectangle.Stroke>
+                </Rectangle>
+                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock x:Name="DropIcon" Text="⬇" FontSize="36" Foreground="#999"
+                               HorizontalAlignment="Center" />
+                    <TextBlock x:Name="DropMainText" Text="拖拽视频文件到此处" FontSize="14" FontWeight="SemiBold"
+                               HorizontalAlignment="Center" Margin="0,8,0,4" />
+                    <TextBlock Text="支持 MP4 / MOV / AVI / M4V / MKV"
+                               FontSize="11" Foreground="#999"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Grid>
         </Border>
 
         <!-- 视频列表 -->

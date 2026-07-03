@@ -502,11 +502,15 @@
                                                        Visibility="{Binding IsChecked, Converter={StaticResource BoolToVisibility}}" />
                                         </Border>
 
-                                        <!-- hover 自动播放（对齐 mac）：进卡 0.35s 起播，离卡停。▶ 仅作静态提示，
-                                             不接收点击（IsHitTestVisible=False），让点击落到卡片 → 选中弹变体池。
-                                             播放时由 StartHoverPlay 隐藏、播完/停止由 Idle 还原。多选模式隐藏。
+                                        <!-- 缩略图整块点击 =（重新）播放（§H：整张缩略图都是点击区，不止小 ▶）。
+                                             hover 进卡 0.35s 也自动起播；但 hover 有盲区——已在卡内、播完 / 调帧后
+                                             MouseEnter 不会再触发，用户点播放「没反应」，必须移出再移回。故补 Background=Transparent
+                                             + MouseLeftButtonUp 显式点击入口兜底（StartHoverPlay 内已 guard 正在播则忽略）。
+                                             OnCardClicked 走 PreviewMouseLeftButtonDown 隧道阶段先收到、仍能选中弹变体池，两者不冲突。
+                                             播放时由 StartHoverPlay 隐藏、播完/停止由 Idle 还原。多选模式隐藏（点击用于勾选）。
                                              x:Name=PlayOverlay 供后台代码定位显隐。 -->
-                                        <Grid x:Name="PlayOverlay" IsHitTestVisible="False"
+                                        <Grid x:Name="PlayOverlay" Background="Transparent" Cursor="Hand"
+                                              MouseLeftButtonUp="OnPlayOverlayClick"
                                               Visibility="{Binding IsSelectionMode, Converter={StaticResource InverseBoolToVisibility}}">
                                             <Border Background="#90000000" CornerRadius="999" Width="46" Height="46"
                                                     HorizontalAlignment="Center" VerticalAlignment="Center">

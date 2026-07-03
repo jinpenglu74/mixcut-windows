@@ -603,7 +603,9 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            ModelErrorText.Text = "下载失败：" + ex.Message;
+            // §红线：ex.Message 对网络异常常是英文（HttpRequestException 等）—— 翻成人话，完整异常进日志。
+            Serilog.Log.Error(ex, "[ModelDownload] 模型下载失败");
+            ModelErrorText.Text = "下载失败，请检查网络连接后重试（详情见日志）";
             ModelErrorText.Visibility = Visibility.Visible;
             DownloadModelButton.IsEnabled = true;
             DownloadModelButton.Visibility = Visibility.Visible;
@@ -640,5 +642,126 @@ public partial class SettingsWindow : Window
             MessageBox.Show("打开数据目录失败：" + ex.Message, "错误",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>更改数据存储位置：选盘 → 在其中建 MixCut 文件夹 → 校验空间 → 登记迁移 → 重启执行。</summary>
+    private void OnChangeDataDir(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = "选择新的数据存储位置（将在其中创建 MixCut 文件夹）",
+        };
+        if (dlg.ShowDialog(this) != true || string.IsNullOrWhiteSpace(dlg.FolderName)) return;
+
+        var toRoot = Path.Combine(dlg.FolderName, "MixCut");
+        var current = AppPaths.Root;
+
+        if (PathEquals(toRoot, current))
+        {
+            MessageBox.Show("所选位置就是当前数据目录，无需更改。", "MixCut",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        // 不允许选到当前数据目录里面（会把自己往自己里拷，死循环）。
+        if (DataDirectoryMigrator.IsUnder(toRoot, current))
+        {
+            MessageBox.Show("不能选择当前数据目录内部的文件夹，请换一个位置（建议选另一个盘的根目录，如 D:\\）。",
+                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var toIsDefault = PathEquals(toRoot, DataDirectoryMigrator.ComputeDefaultRoot());
+        StartMigrationTo(toRoot, toIsDefault);
+    }
+
+    /// <summary>恢复默认位置（C 盘 %APPDATA%）。已在默认位置则提示无需操作。</summary>
+    private void OnResetDataDir(object sender, RoutedEventArgs e)
+    {
+        var def = DataDirectoryMigrator.ComputeDefaultRoot();
+        if (!AppPaths.IsCustomRoot || PathEquals(def, AppPaths.Root))
+        {
+            MessageBox.Show("当前已经在默认位置，无需恢复。", "MixCut",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        StartMigrationTo(def, toIsDefault: true);
+    }
+
+    /// <summary>算数据量 + 校验目标盘空间 → 二次确认 → 登记待迁移 → 重启（迁移在启动最前面执行）。</summary>
+    private void StartMigrationTo(string toRoot, bool toIsDefault)
+    {
+        var current = AppPaths.Root;
+
+        // 要一并搬的模型目录：目标是自定义 → 放 toRoot\{sub}；目标是默认 → 放 %LOCALAPPDATA%\MixCut\{sub}（默认模型落点）。
+        var pairs = new List<(string from, string to)>();
+        long bytes = DataDirectoryMigrator.DirectorySize(current); // 已含「在 Root 之下」的模型（自定义模式）
+        foreach (var (srcDir, sub) in new[]
+                 {
+                     (AppPaths.WhisperModelsDirectory, "whisper-models"),
+                     (AppPaths.DemucsModelsDirectory, "demucs-models"),
+                 })
+        {
+            if (!Directory.Exists(srcDir)) continue;
+            var dst = toIsDefault
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MixCut", sub)
+                : Path.Combine(toRoot, sub);
+            if (PathEquals(srcDir, dst)) continue;
+            pairs.Add((srcDir, dst));
+            // 模型若不在 current 之下（默认模式在 %LOCALAPPDATA%），单独计一份空间；在 Root 之下的已被上面算过。
+            if (!DataDirectoryMigrator.IsUnder(srcDir, current))
+                bytes += DataDirectoryMigrator.DirectorySize(srcDir);
+        }
+
+        var free = DataDirectoryMigrator.GetDriveFreeBytes(toRoot);
+        if (free >= 0 && free < (long)(bytes * 1.05))
+        {
+            MessageBox.Show(
+                $"目标位置所在盘剩余空间不足。\n需要约 {FormatBytes(bytes)}，该盘仅剩 {FormatBytes(free)}。\n请清理空间或换一个盘。",
+                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            $"将把约 {FormatBytes(bytes)} 数据迁移：\n\n从：{current}\n到：{toRoot}\n\n" +
+            "迁移会在下次启动时进行，期间请勿关机或断电（旧数据在迁移成功前不会删除）。\n\n现在重启并开始迁移？",
+            "更改数据存储位置", MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.OK) return;
+
+        DataDirectoryMigrator.RequestMigration(current, toRoot, toIsDefault, pairs);
+
+        // 重启：迁移在新进程 OnStartup 最前面执行。
+        try
+        {
+            var exe = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(exe))
+                Process.Start(new ProcessStartInfo { FileName = exe, UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("自动重启失败，请手动重新打开 MixCut 以完成迁移。\n" + ex.Message,
+                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        Application.Current.Shutdown();
+    }
+
+    private static bool PathEquals(string a, string b)
+    {
+        try
+        {
+            return string.Equals(
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+                Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        double b = bytes;
+        string[] u = { "B", "KB", "MB", "GB", "TB" };
+        var i = 0;
+        while (b >= 1024 && i < u.Length - 1) { b /= 1024; i++; }
+        return $"{b:0.#} {u[i]}";
     }
 }

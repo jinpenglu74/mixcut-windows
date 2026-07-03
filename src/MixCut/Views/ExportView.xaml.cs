@@ -659,7 +659,8 @@ public partial class ExportView : UserControl, IProjectView
             catch (OperationCanceledException) { canceled = true; }
             catch (Exception ex)
             {
-                lock (errors) { errors.Add($"{task.Name}: {ex.Message}"); }
+                // §红线：ex.Message 对 FFmpegException 含 "exit {code}: {stderr}"，绝不能直给用户 —— 翻成人话。
+                lock (errors) { errors.Add($"{task.Name}: {MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex)}"); }
             }
             finally
             {

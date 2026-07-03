@@ -256,6 +256,29 @@ public partial class InlineVideoPlayer : UserControl
     /// <summary>外部触发播放（卡片上的静态 ▶ 调用）。等价于点内部播放按钮。</summary>
     public void Play() => OnPlayClick(this, new RoutedEventArgs());
 
+    /// <summary>
+    /// 设定帧精确窗口并**立即（重新）起播** —— 恒定一次 Open，不走 <see cref="SetSegmentCore"/> 的
+    /// 「正在播放才自动重开」状态分支，供卡片「点击整段播放」与「调帧境界窗口预览」统一调用，
+    /// 复用 / 冻结 / 正在播 各态都只 Open 一次，杜绝二次 Open 抖动。StartFrame 含、EndFrame 不含，播完冻结 EndFrame-1。
+    /// </summary>
+    public void PlaySegment(string videoPath, string? thumbnailPath, int startFrame, int endFrame, double fps)
+    {
+        var pathChanged = _videoPath != videoPath;
+        _videoPath = videoPath;
+        _segmentStartFrame = startFrame;
+        _segmentEndFrame = endFrame;
+        _segmentFps = fps;
+        _segmentStart = FrameTime.FrameToSeconds(startFrame, fps);
+        _segmentEnd = FrameTime.FrameToSeconds(endFrame, fps);
+        _fullDuration = 0;
+        // 首播 / 换视频时补首帧封面（盖住起播前的黑位图，见 OnPlayClick 注释）。
+        if (pathChanged || ThumbImage.Source is null)
+        {
+            ThumbImage.Source = LoadThumb(thumbnailPath);
+        }
+        OnPlayClick(this, new RoutedEventArgs());
+    }
+
     private void OnPlayClick(object sender, RoutedEventArgs e)
     {
         if (string.IsNullOrEmpty(_videoPath) || !File.Exists(_videoPath))

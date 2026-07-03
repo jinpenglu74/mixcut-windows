@@ -50,8 +50,21 @@ public static class AppPaths
 
     // ---- 内部实现 ----
 
+    /// <summary>用户是否把数据目录改到了自定义位置（非默认三级兜底）。模型等目录据此决定是否也跟着走。</summary>
+    public static bool IsCustomRoot { get; private set; }
+
     private static string ResolveWritableRoot()
     {
+        // 最优先：用户在设置里配置过的数据目录（指针文件，见 DataDirectoryMigrator）。
+        // 注意：迁移本身在 App.OnStartup 最前面已执行完并写好指针，这里只负责「读指针决定 Root」。
+        var configured = Infrastructure.DataDirectoryMigrator.ReadConfiguredRoot();
+        if (!string.IsNullOrWhiteSpace(configured) && TryUse(configured))
+        {
+            IsCustomRoot = true;
+            Console.WriteLine($"[AppDataDiag] selected=custom root={configured}");
+            return configured;
+        }
+
         var tier1 = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MixCut");
         var tier2 = Path.Combine(
@@ -96,21 +109,18 @@ public static class AppPaths
         }
     }
 
-    private static string ResolveWhisperModelsDir()
-    {
-        // 优先 LocalAppData\MixCut\whisper-models
-        var localDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "MixCut", "whisper-models");
-        if (TryUse(localDir)) return CreateDir(localDir);
+    private static string ResolveWhisperModelsDir() => ResolveLocalFirstDir("whisper-models");
 
-        // 回退到 Root\whisper-models（跟主数据目录走相同 tier）
-        return CreateDir(Path.Combine(Root, "whisper-models"));
-    }
-
-    /// <summary>优先 <c>%LOCALAPPDATA%\MixCut\{sub}</c>，不可写时回退 <c>Root\{sub}</c>（大文件目录通用）。</summary>
+    /// <summary>
+    /// 大文件目录（模型）的位置：
+    /// - 用户改过数据目录（<see cref="IsCustomRoot"/>）→ 直接放 <c>Root\{sub}</c>，让模型也搬到用户选的盘（省 C 盘）；
+    /// - 默认情况 → 优先 <c>%LOCALAPPDATA%\MixCut\{sub}</c>（非漫游、不被同步），不可写回退 <c>Root\{sub}</c>。
+    /// </summary>
     private static string ResolveLocalFirstDir(string sub)
     {
+        if (IsCustomRoot)
+            return CreateDir(Path.Combine(Root, sub));
+
         var localDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "MixCut", sub);

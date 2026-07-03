@@ -507,11 +507,22 @@ public partial class ImportViewModel : ObservableObject
             await GenerateSegmentThumbnailsAsync(video.Id, video.LocalPath, db);
             ReportVideoStage(videoId, VideoStage.Finalize, 1.0);
 
+            // 分镜此刻已入库 + 有缩略图 —— 立即失效 SegmentLibrary 缓存，让用户点过去就能看到分镜。
+            // 关键修复：下面 Step 6 逐分镜精识别对一条 111s / 29 段的视频要跑 60~90s WebSocket，
+            // 若把「通知 UI 刷新」拖到整个 AnalyzeVideoAsync 结束（finally 里那次 SegmentsChanged）才发，
+            // 用户在这 90s 里点分镜库会命中 MainWindow 的 project 缓存 → 跳过 LoadProject → 看到空列表，
+            // 直到重启才显示（用户实测报的正是这个）。精识别只是覆盖 Text，分镜边界/缩略图已定，先让它们显示。
+            SegmentsChanged?.Invoke();
+            _logger.LogInformation("[SegVisibleDiag] 分镜已入库并通知刷新 video={Name} 段数={Count}",
+                video.Name, video.Segments.Count);
+
             // Step 6: 逐分镜阿里精识别台词（对齐 mac「阿里 ASR 混合架构」）。
             // whisper 整片转写只用于切分镜的时间戳；分镜显示台词由 Paraformer 各段独立重识别，
             // 短音频天生准、带标点。无千问 key 时优雅跳过（保留 whisper 文本，不报错）。
             CheckCancelled(videoId);
             await ReidentifySegmentTextsAsync(video, db, videoId);
+            // 精识别覆盖了 Text，再刷一次让分镜卡片显示更准的台词。
+            SegmentsChanged?.Invoke();
 
             video.Status = VideoStatus.Completed;
             video.ErrorMessage = null;

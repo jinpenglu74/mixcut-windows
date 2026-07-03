@@ -1,5 +1,7 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -866,6 +868,35 @@ public partial class App : Application
             return;
         }
 
+        // 数据目录迁移自测（构建机自验证，不碰真实 %APPDATA% 指针）：沙盒里跑一遍拷贝+改库，打印 PASS/FAIL。
+        if (Array.IndexOf(e.Args, "--selftest-datamigrate") >= 0)
+        {
+            var sandbox = Path.Combine(Path.GetTempPath(), "mixcut-datamigrate-selftest");
+            string outcome;
+            try { outcome = Infrastructure.DataDirectoryMigrator.SelfTest(sandbox); }
+            catch (Exception ex) { outcome = "[DataMigrateSelfTest] THREW\n" + ex; }
+            Console.WriteLine(outcome);
+            try { File.WriteAllText(Path.Combine(Path.GetTempPath(), "mixcut-datamigrate-selftest-result.txt"), outcome); }
+            catch { /* ignore */ }
+            Shutdown();
+            return;
+        }
+
+        // 数据目录迁移（用户在「设置 → 存储」改了存储位置，上次退出前登记了待迁移）：
+        // 必须在**任何 AppPaths / 日志 / DB 打开之前**执行 —— 否则旧目录的 mixcut.db / 日志被占用，搬不动。
+        // 无待迁移标记时零副作用、立即返回。放在自测早退之后、闪屏 + host 启动之前，是全流程最早的安全点。
+        try
+        {
+            if (Infrastructure.DataDirectoryMigrator.HasPending())
+                RunDataMigrationWithProgress();
+        }
+        catch (Exception ex)
+        {
+            // 迁移器自身已把失败兜住并保留旧数据；这里再兜一层，绝不因迁移崩掉启动。
+            MessageBox.Show($"数据迁移出错，已保留原数据。\n{ex.Message}", "MixCut",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         // QW-10：冷启动期 host 启动 + DB 迁移 + 硬件探测有数秒空白，先弹启动闪屏给即时反馈，
         // 避免「双击了没反应」的错觉。try/catch 兜底 —— 闪屏永远不能阻断或拖垮真正的启动。
         SplashWindow? splash = null;
@@ -901,7 +932,8 @@ public partial class App : Application
         //   - DispatcherUnhandledException：UI 线程同步异常 / async void 抛出
         //   - TaskScheduler.UnobservedTaskException：Task 抛了但没人 await
         //   - AppDomain.UnhandledException：以上漏网（包括子线程崩溃）
-        // 都 Log.Fatal 写盘 + 弹 MessageBox + flush，让用户看得到错误而不是窗口神秘消失。
+        // 前两者会真正威胁进程存活 → Log.Fatal 写盘 + 弹 MessageBox + flush，让用户看得到错误而不是窗口神秘消失。
+        // UnobservedTaskException 例外：它按定义不会崩进程，绝大多数是后台连接拆解的 socket 噪音，只静默记日志（见下）。
         DispatcherUnhandledException += (_, args) =>
         {
             LogFatalAndShow(args.Exception, "UI 线程");
@@ -916,8 +948,13 @@ public partial class App : Application
         };
         System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, args) =>
         {
-            LogFatalAndShow(args.Exception, "未观察的 Task 异常");
+            // 未观察的 Task 异常 = 没人 await 的后台任务抛的错。按定义进程不会因此崩溃（窗口不会神秘消失），
+            // 绝大多数是后台 HTTP/WebSocket 连接被拆时的 socket abort（SocketException 995 /
+            // IOException「已中止 I/O 操作」）—— 例如逐分镜精识别 / AI 请求的连接池回收。
+            // 这类噪音绝不能弹模态框吓用户（违反 §最高原则红线：不许把 stack trace / 原生报错码丢用户脸上）。
+            // 只静默写日志 + SetObserved，让它安静消失。真正会崩进程的走上面 Dispatcher / AppDomain 两个 hook。
             args.SetObserved();
+            Log.Warning(args.Exception, "[后台任务异常] 已忽略（不影响运行）：{Message}", args.Exception.Message);
         };
 
         // 初始化数据库（不存在则按当前模型创建）。
@@ -1096,6 +1133,57 @@ public partial class App : Application
     }
 
     /// <summary>统一记录致命异常到日志（强制 flush）+ 弹窗告知用户，不让进程静默退出。</summary>
+    /// <summary>
+    /// 执行待处理的数据目录迁移，期间弹一个带进度条的小窗（拷 GB 级视频/模型可能要几分钟，不能让用户以为卡死）。
+    /// 同步阻塞启动直到搬完 —— 此刻 host 还没起、Serilog 未就绪，迁移器自己写 migration.log，不依赖 Log.X。
+    /// 用 DispatcherFrame 泵消息，让进度条在后台拷贝时能实时刷新。失败时给人话提示（旧数据未动）。
+    /// </summary>
+    private void RunDataMigrationWithProgress()
+    {
+        var win = new Window
+        {
+            Title = "MixCut 数据迁移",
+            Width = 480,
+            Height = 170,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStyle = WindowStyle.ToolWindow,
+            Topmost = true,
+            ShowInTaskbar = true,
+        };
+        var panel = new StackPanel { Margin = new Thickness(22) };
+        var text = new TextBlock
+        {
+            Text = "正在把数据迁移到新位置，请勿关机或关闭窗口…",
+            FontSize = 13,
+            Margin = new Thickness(0, 0, 0, 14),
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var bar = new ProgressBar { Height = 20, Minimum = 0, Maximum = 1 };
+        panel.Children.Add(text);
+        panel.Children.Add(bar);
+        win.Content = panel;
+        win.Show();
+
+        Infrastructure.DataDirectoryMigrator.MigrationResult? result = null;
+        var frame = new DispatcherFrame();
+        _ = System.Threading.Tasks.Task.Run(() =>
+        {
+            result = Infrastructure.DataDirectoryMigrator.RunPendingIfAny((msg, p) =>
+                Dispatcher.Invoke(() => { text.Text = msg; bar.Value = p; }));
+        }).ContinueWith(_ => Dispatcher.Invoke(() => frame.Continue = false));
+        Dispatcher.PushFrame(frame); // 泵消息等迁移完成（进度条可刷新），完成后 Continue=false 退出
+        try { win.Close(); } catch { }
+
+        if (result is { Outcome: Infrastructure.DataDirectoryMigrator.MigrationOutcome.Failed })
+        {
+            MessageBox.Show(
+                $"数据迁移未完成，已保留原位置的数据（未丢失）。\n\n原因：{result.Error}\n\n" +
+                "可稍后在「设置 → 存储」里重试，或换一个空间更充足的盘。",
+                "MixCut 数据迁移", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private static void LogFatalAndShow(Exception ex, string source)
     {
         try
@@ -1118,8 +1206,12 @@ public partial class App : Application
         }
         try
         {
+            // §红线：不把异常类型名（如 System.Text.Json.JsonException）/ stack trace 丢用户脸上。
+            // 完整堆栈已由上面的 Log.Fatal 写进日志；这里只给人话 + 日志位置 + 下一步。
             MessageBox.Show(
-                $"MixCut 遇到错误（{source}）：\n\n{ex.Message}\n\n{ex.GetType().FullName}\n详细堆栈已写入日志：\n{AppPaths.LogDirectory}",
+                "MixCut 遇到意外错误，已自动记录诊断信息。\n\n" +
+                "你可以尝试重新打开应用继续使用；若反复出现，请把下面文件夹里的日志发给我们协助排查：\n\n" +
+                AppPaths.LogDirectory,
                 "MixCut",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);

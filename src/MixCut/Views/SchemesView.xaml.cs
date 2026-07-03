@@ -401,6 +401,17 @@ public partial class SchemesView : UserControl, IProjectView
             Cursor = Cursors.Hand, Tag = strategy,
         };
         header.MouseLeftButtonDown += OnStrategyHeaderClick;
+        // hover 反馈（对齐侧边栏导航）：折叠态 hover 显浅灰、离开还原透明；展开态保持浅蓝不受影响。
+        header.MouseEnter += (_, _) =>
+        {
+            if (!_expandedStrategies.Contains(strategy.Id))
+                header.Background = new SolidColorBrush(Color.FromRgb(0xF0, 0xF0, 0xF2));
+        };
+        header.MouseLeave += (_, _) =>
+        {
+            if (!_expandedStrategies.Contains(strategy.Id))
+                header.Background = Brushes.Transparent;
+        };
 
         var headerGrid = new Grid();
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });

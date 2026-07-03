@@ -209,6 +209,70 @@
         <Setter Property="BorderThickness" Value="1.5" />
     </Style>
 
+    <!-- 可点击统计卡（概览页 3 个统计块等）：灰底 + 1px 微边框定义，hover 时抬升
+         （换白底 + 主色描边 + 柔和阴影），给「这块可点」的剪映式反馈。CornerRadius/Padding 由使用处设。 -->
+    <Style x:Key="StatCardStyle" TargetType="Border">
+        <Setter Property="Background" Value="{StaticResource BgSecondaryBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderSubtleBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="{StaticResource CornerRadiusLg}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource BgPrimaryBrush}" />
+                <Setter Property="BorderBrush" Value="{StaticResource AccentBlueBrush}" />
+                <Setter Property="Effect" Value="{StaticResource ShadowSm}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- 软色块动作按钮（概览「快速操作」三色块等）：保留使用处设的浅色底 + 前景色，
+         但用自绘模板取代 WPF 默认按钮模板——默认模板 hover 会用系统浅蓝盖掉自定义底色（看着像坏了）。
+         颜色无关的反馈：hover 叠一层极轻暗化 + 柔和阴影，按下微缩 0.98，给剪映式「可点、按下去了」的手感。 -->
+    <Style x:Key="SoftActionTileStyle" TargetType="Button">
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="root" Background="{TemplateBinding Background}"
+                            CornerRadius="{StaticResource CornerRadiusMd}"
+                            Padding="{TemplateBinding Padding}"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
+                        <Grid>
+                            <Border x:Name="overlay" Background="Transparent"
+                                    CornerRadius="{StaticResource CornerRadiusMd}" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="overlay" Property="Background" Value="#14000000" />
+                            <Setter TargetName="root" Property="Effect" Value="{StaticResource ShadowSm}" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="overlay" Property="Background" Value="#1F000000" />
+                            <Setter TargetName="root" Property="RenderTransform">
+                                <Setter.Value>
+                                    <ScaleTransform ScaleX="0.98" ScaleY="0.98" />
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="root" Property="Opacity" Value="0.5" />
+                            <Setter Property="Cursor" Value="Arrow" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
     <!-- ========== TextBox 占位辅助（PlaceholderText helper） ========== -->
     <Style x:Key="InlineEditTextBoxStyle" TargetType="TextBox">
         <Setter Property="Background" Value="Transparent" />

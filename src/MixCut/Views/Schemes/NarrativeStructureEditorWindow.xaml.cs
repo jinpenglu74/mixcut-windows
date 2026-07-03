@@ -293,7 +293,8 @@ public partial class NarrativeStructureEditorWindow : Window
         catch (Exception ex)
         {
             Serilog.Log.Error(ex, "[NarrativeGen] 编辑器生成异常");
-            StatusText.Text = "生成失败：" + ex.Message;
+            // §红线：不给用户裸 ex.Message —— 翻成人话（AI 异常本就中文，其它走兜底）。
+            StatusText.Text = "生成失败：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex);
             _generating = false;
             UpdatePreviewAndGate();
         }

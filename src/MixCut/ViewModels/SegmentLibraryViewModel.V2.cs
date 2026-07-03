@@ -33,6 +33,13 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     /// </summary>
     public event Action? SegmentsStructurallyChanged;
 
+    /// <summary>
+    /// 调 IN/OUT 帧边界后请求「境界预览播放」（对齐 Mac：调开头→从起点自动播几秒；调结尾→从末尾前几秒播到最后，
+    /// 便于查看调整结果）。bool=isStart。VM 只发意图，实际懒创建/复用卡片内 InlineVideoPlayer 播放窗口由 View 处理
+    /// （播放器活在可视树里、VM 无引用）。与 <see cref="ShowBoundaryFrame"/> 的静止帧互补：静止帧即时反馈、播放看动态。
+    /// </summary>
+    public event Action<SegmentCardViewModel, bool>? BoundaryPreviewRequested;
+
     // ============ V2 数据装载 ============
 
     /// <summary>切项目 / 筛选 / 排序变化时调用，重建 Groups。</summary>
@@ -244,6 +251,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         AdjustStartFrame(card.Segment, Math.Sign(step));
         RefreshCardsForVideo(card.Segment.VideoId);
         ShowBoundaryFrame(card, isStart: true);
+        BoundaryPreviewRequested?.Invoke(card, true);
     }
 
     void ISegmentCardHost.AdjustEndTime(SegmentCardViewModel card, double step)
@@ -251,6 +259,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         AdjustEndFrame(card.Segment, Math.Sign(step));
         RefreshCardsForVideo(card.Segment.VideoId);
         ShowBoundaryFrame(card, isStart: false);
+        BoundaryPreviewRequested?.Invoke(card, false);
     }
 
     void ISegmentCardHost.SetStartTime(SegmentCardViewModel card, double newStart)
@@ -258,6 +267,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         SetStartTime(card.Segment, newStart);
         RefreshCardsForVideo(card.Segment.VideoId);
         ShowBoundaryFrame(card, isStart: true);
+        BoundaryPreviewRequested?.Invoke(card, true);
     }
 
     void ISegmentCardHost.SetEndTime(SegmentCardViewModel card, double newEnd)
@@ -265,6 +275,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         SetEndTime(card.Segment, newEnd);
         RefreshCardsForVideo(card.Segment.VideoId);
         ShowBoundaryFrame(card, isStart: false);
+        BoundaryPreviewRequested?.Invoke(card, false);
     }
 
     private void RefreshCardsForVideo(Guid? videoId)
@@ -444,9 +455,17 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     // ============ P3：字幕处理（保留原声 / 字幕处理 / 遮挡框） ============
 
+    /// <summary>
+    /// 配音服务的非空访问器。<c>_dubbing</c> 声明为可空，但**生产环境恒非空** ——
+    /// DI 对多构造选「参数最多且可满足者」，`FFmpegRunner`+`DubbingViewModel` 均已注册，
+    /// 故实际走 4 参构造（注入非空 dubbing）；2 参构造仅供单元测试，且测试不触达下面这些配音回调。
+    /// 用此属性集中表达该不变量，既消除 6 处 CS8602 噪音、又保留「真为 null 就 NRE 快速失败」（是配置错误，应立即暴露而非静默）。
+    /// </summary>
+    private DubbingViewModel Dubbing => _dubbing!;
+
     async Task ISegmentCardHost.ToggleVoiceLockAsync(SegmentCardViewModel card, bool locked)
     {
-        await _dubbing.SetVoiceLockedAsync(card.Segment.Id, locked);
+        await Dubbing.SetVoiceLockedAsync(card.Segment.Id, locked);
         // 关键修复：_dubbing 用独立短上下文改的是 DB 里另一个 Segment 实例，card.Segment 是内存里
         // LoadSegments 时加载的对象，不会被那次写入更新。必须手动同步内存对象，否则 RefreshFromSegment
         // 读到旧值 → 复选框/字幕处理面板不刷新 → 用户感知「点了没反应」。
@@ -459,7 +478,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     async Task ISegmentCardHost.SetSubtitleTreatmentAsync(SegmentCardViewModel card, SubtitleTreatment treatment)
     {
-        await _dubbing.SetSubtitleTreatmentAsync(card.Segment.Id, treatment);
+        await Dubbing.SetSubtitleTreatmentAsync(card.Segment.Id, treatment);
         // 同上：同步内存 Segment，否则三胶囊高亮不切换（DataTrigger 绑 SubtitleTreatment 读到旧值）。
         card.Segment.SubtitleTreatment = treatment;
         // DubsChanged 已由 SetSubtitleTreatmentAsync 内部触发
@@ -468,12 +487,12 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     void ISegmentCardHost.CommitMaskRect(SegmentCardViewModel card)
     {
-        _ = _dubbing.SetMaskRectAsync(card.Segment.Id, card.MaskRect);
+        _ = Dubbing.SetMaskRectAsync(card.Segment.Id, card.MaskRect);
     }
 
     async Task ISegmentCardHost.ApplyMaskToAllAsync(SegmentCardViewModel card)
     {
-        var n = await _dubbing.ApplyMaskToAllAsync(card.Segment.Id);
+        var n = await Dubbing.ApplyMaskToAllAsync(card.Segment.Id);
 
         // _dubbing 走的是另一个短上下文，只改了 DB —— 分镜库 VM 的 _segments（卡片正绑定的对象）还是旧值。
         // 必须把源分镜的「字幕处理 + 遮挡框」同步到同一视频其余分镜的内存对象，再刷新对应卡片，UI 才联动。
@@ -505,7 +524,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     {
         try
         {
-            var newText = await _dubbing.ReRecognizeSegmentAsync(card.Segment.Id, ct);
+            var newText = await Dubbing.ReRecognizeSegmentAsync(card.Segment.Id, ct);
             // 同步内存 Segment.Text：ReRecognizeSegmentAsync 只改了另一个短上下文里的实体，
             // 不同步这里的话，卡片随后 RefreshFromSegment 会用旧 _segment.Text 把新识别结果覆盖回去，
             // 看着像「点了没反应」（对齐 [[dub-p3-inmemory-sync-bug]] 教训）。
@@ -525,7 +544,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     async Task<string> ISegmentCardHost.SaveSegmentTextAsync(SegmentCardViewModel card, string newText, CancellationToken ct)
     {
-        var saved = await _dubbing.UpdateSegmentTextAsync(card.Segment.Id, newText, ct);
+        var saved = await Dubbing.UpdateSegmentTextAsync(card.Segment.Id, newText, ct);
         // 同步内存 Segment.Text（同 ReRecognize：短上下文改的是另一个实例）。
         card.Segment.Text = saved;
         Views.Components.ToastService.Show("台词已保存", Views.Components.ToastStyle.Success);

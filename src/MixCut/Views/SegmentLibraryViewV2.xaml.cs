@@ -37,6 +37,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         _vm.SelectionChanged += OnSelectionChanged;
         // 右键单删 / Ctrl+Z 恢复后，VM 广播此事件，View 刷新统计 / 类型 chip / 空态（VM 已自行 RebuildGroups）。
         _vm.SegmentsStructurallyChanged += OnSegmentsStructurallyChanged;
+        // 调 IN/OUT 帧后播放境界窗口（对齐 Mac，见 OnBoundaryPreviewRequested）。
+        _vm.BoundaryPreviewRequested += OnBoundaryPreviewRequested;
 
         Focusable = true;
         PreviewKeyDown += OnPreviewKeyDown;
@@ -314,7 +316,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         catch (Exception ex)
         {
             Serilog.Log.Error(ex, "[SegmentLibraryViewV2.OnCombineSchemeClick] 异常: {Message}", ex.Message);
-            Components.ToastService.Show($"组合失败: {ex.Message}", Components.ToastStyle.Warning);
+            // §红线：ex.Message 可能含原始异常文本 —— 翻成人话（AI 异常本就是中文，FFmpeg/其它走兜底）。
+            Components.ToastService.Show($"组合失败: {MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex)}", Components.ToastStyle.Warning);
         }
     }
 
@@ -480,6 +483,21 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         timer.Start();
     }
 
+    /// <summary>
+    /// 点击缩略图 / ▶ → 显式（重新）播放该分镜。补 hover 自动播放的盲区：
+    /// 已在卡内、播完 / 调帧微调后 MouseEnter 不会再触发，用户点播放「没反应」（用户反馈：
+    /// 调帧后必须移出空白处再移回才播）。StartHoverPlay 内已 guard「正在播则忽略」，重复点不抖。
+    /// </summary>
+    private void OnPlayOverlayClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement fe) return;
+        if (FindAncestorByName(fe, "CardRoot") is not FrameworkElement { Tag: SegmentCardViewModel card } cardRoot) return;
+        if (!card.IsVideoFileAvailable) return;
+        if (IsSelectionModeActive()) return; // 多选态点击用于勾选，不播放
+        CancelHoverTimer(card);
+        StartHoverPlay(card, cardRoot);
+    }
+
     private void OnCardMouseLeave(object sender, MouseEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: SegmentCardViewModel card }) return;
@@ -531,8 +549,54 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
     }
 
+    /// <summary>境界窗口预览的播放时长（秒）：调 IN 从起点播这么久、调 OUT 播最后这么久。对齐 Mac「点加减播几秒看结果」。</summary>
+    private const double BoundaryPreviewSeconds = 2.0;
+
+    /// <summary>调 IN/OUT 后的境界预览播放 debounce（每卡一个）：连点微调只在停手 ~300ms 后播一次窗口，避免每帧重启 ffmpeg。</summary>
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SegmentCardViewModel, System.Windows.Threading.DispatcherTimer> _boundaryTimers = new();
+
     /// <summary>
-    /// hover 到时 / 微调请求 → 在该卡 VideoHost 里懒创建内联播放器并播放（对齐 mac hover 自动播放）。
+    /// 在该卡 VideoHost 里懒创建（或复用）内联播放器，挂 Idle 还原逻辑（播完 / 停止 / 被抢占 → 拆播放器 + 还原 ▶/角标）。
+    /// 不再挂「时间字段实时同步 SetSegment(整段)」监听 —— 调帧改由 <see cref="PlayBoundaryPreview"/> 播境界窗口取代
+    /// （旧监听会与窗口预览抢 SetSegment 导致范围打架，见 §不要破坏已有功能）。
+    /// </summary>
+    private Components.InlineVideoPlayer EnsureCardPlayer(
+        ContentControl videoHost, Grid? playBtn, Border? badge, SegmentCardViewModel card)
+    {
+        if (videoHost.Content is Components.InlineVideoPlayer existing) return existing;
+        var player = new Components.InlineVideoPlayer
+        {
+            AutoPlayOnHover = false,
+            VideoStretch = System.Windows.Media.Stretch.UniformToFill,
+        };
+        player.Idle += (_, _) =>
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                // 仅当仍是本 player 才还原：避免旧 player 播完的 Idle 把刚换上的新预览的 ▶ 闪出来。
+                if (videoHost.Content == player)
+                {
+                    TeardownHoverPlayer(videoHost, player, card);
+                    if (playBtn is not null) playBtn.Visibility = Visibility.Visible;
+                    if (badge is not null) badge.Visibility = Visibility.Visible;
+                }
+            }), System.Windows.Threading.DispatcherPriority.Background);
+        };
+        videoHost.Content = player;
+        return player;
+    }
+
+    /// <summary>用宿主已布局尺寸预置解码目标（竖屏框），免去昂贵同步 UpdateLayout（数十卡 ~150-200ms）；刚塞进去的 player 自身 ActualWidth=0。</summary>
+    private static void PrimePlayer(Components.InlineVideoPlayer player, ContentControl videoHost)
+    {
+        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(videoHost);
+        player.PrimeDecodeSize(
+            (int)Math.Round(videoHost.ActualWidth * dpi.DpiScaleX),
+            (int)Math.Round(videoHost.ActualHeight * dpi.DpiScaleY));
+    }
+
+    /// <summary>
+    /// 点击 / hover 到时 → 在该卡 VideoHost 里懒创建内联播放器，播放<b>整段</b>（起点→终点）。
     /// 播完 / 停止 / 被其他卡抢占由 player.Idle 还原缩略图。
     /// </summary>
     private void StartHoverPlay(SegmentCardViewModel card, FrameworkElement cardRoot)
@@ -553,65 +617,78 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
 
         Serilog.Log.Information(
-            "[SegPlayDiag] hover 播放 seq={Seq} startFrame={SF} videoHostHash={H}",
-            card.SequenceNumber, card.Segment.StartFrame, videoHost.GetHashCode());
+            "[SegPlayDiag] 点击/hover 播放 seq={Seq} startFrame={SF}",
+            card.SequenceNumber, card.Segment.StartFrame);
 
-        if (videoHost.Content is not Components.InlineVideoPlayer player)
-        {
-            player = new Components.InlineVideoPlayer
-            {
-                AutoPlayOnHover = false,
-                VideoStretch = System.Windows.Media.Stretch.UniformToFill,
-            };
-            player.SetSegment(card.VideoLocalPath!, card.ThumbnailPath,
-                card.Segment.StartFrame, card.Segment.EndFrame, card.Segment.EffectiveFps);
-
-            // ±0.1s 微调时实时同步给正在播放的 player。
-            PropertyChangedEventHandler handler = (_, args) =>
-            {
-                if (args.PropertyName is nameof(SegmentCardViewModel.StartTime)
-                                      or nameof(SegmentCardViewModel.EndTime))
-                {
-                    Dispatcher.BeginInvoke(new Action(() =>
-                    {
-                        if (videoHost.Content == player && card.IsVideoFileAvailable)
-                        {
-                            player.SetSegment(card.VideoLocalPath!, card.ThumbnailPath,
-                                card.Segment.StartFrame, card.Segment.EndFrame, card.Segment.EffectiveFps);
-                        }
-                    }));
-                }
-            };
-            card.PropertyChanged += handler;
-            _playerHandlers.Add(player, handler);
-
-            // 播完 / 停止 / 被其他卡抢占 → 拆掉播放器，还原静态缩略图 + ▶ + 时长角标。
-            player.Idle += (_, _) =>
-            {
-                Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    if (videoHost.Content == player)
-                    {
-                        TeardownHoverPlayer(videoHost, player, card);
-                    }
-                    if (playBtn is not null) playBtn.Visibility = Visibility.Visible;
-                    if (badge is not null) badge.Visibility = Visibility.Visible;
-                }), System.Windows.Threading.DispatcherPriority.Background);
-            };
-
-            videoHost.Content = player;
-        }
-
-        // 隐藏 ▶ 与时长角标（避免与控制栏时长重叠），开始播放。
+        var player = EnsureCardPlayer(videoHost, playBtn, badge, card);
         if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
         if (badge is not null) badge.Visibility = Visibility.Collapsed;
-        // 用已布局好的 videoHost 尺寸预置解码目标（竖屏框），免去昂贵的同步 UpdateLayout（数十卡 ~150-200ms）。
-        // 刚塞进去的 player 自身 ActualWidth=0，但 videoHost 早已布局、尺寸确定。
-        var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(videoHost);
-        player.PrimeDecodeSize(
-            (int)Math.Round(videoHost.ActualWidth * dpi.DpiScaleX),
-            (int)Math.Round(videoHost.ActualHeight * dpi.DpiScaleY));
-        player.Play();
+        PrimePlayer(player, videoHost);
+        player.PlaySegment(card.VideoLocalPath!, card.ThumbnailPath,
+            card.Segment.StartFrame, card.Segment.EndFrame, card.Segment.EffectiveFps);
+    }
+
+    /// <summary>
+    /// VM 调 IN/OUT 帧后广播的境界预览请求 → debounce ~300ms 播放境界窗口（对齐 Mac：调开头从起点播几秒、
+    /// 调结尾从末尾前几秒播到最后，便于查看调整结果）。连点微调合并成一次播放，避免每帧重启 ffmpeg
+    /// （静止帧 <c>ScrubImage</c> 已给每点即时反馈，这里补动态）。
+    /// </summary>
+    private void OnBoundaryPreviewRequested(SegmentCardViewModel card, bool isStart)
+    {
+        if (!card.IsVideoFileAvailable) return;
+        if (IsSelectionModeActive()) return; // 多选态不播（点击用于勾选）
+
+        if (_boundaryTimers.TryGetValue(card, out var old)) { old.Stop(); _boundaryTimers.Remove(card); }
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            _boundaryTimers.Remove(card);
+            PlayBoundaryPreview(card, isStart);
+        };
+        _boundaryTimers.AddOrUpdate(card, timer);
+        timer.Start();
+    }
+
+    /// <summary>
+    /// 播放境界窗口：isStart → [起点, 起点+N秒)；否则 → [末尾-N秒, 末尾)（EndFrame 不含，播到 EndFrame-1 冻结）。
+    /// 复用 / 新建卡片播放器均走 <see cref="Components.InlineVideoPlayer.PlaySegment"/>（恒定一次 Open）。
+    /// </summary>
+    private void PlayBoundaryPreview(SegmentCardViewModel card, bool isStart)
+    {
+        if (!card.IsVideoFileAvailable) return;
+        if (IsSelectionModeActive()) return;
+
+        var cardRoot = FindCardRootFor(card);
+        if (cardRoot is null) return;
+        var thumbGrid = FindChild<Grid>(cardRoot, "ThumbGrid");
+        if (thumbGrid is null) return;
+        var videoHost = FindChild<ContentControl>(thumbGrid, "VideoHost");
+        if (videoHost is null) return;
+        var badge = FindChild<Border>(thumbGrid, "CardDurationBadge");
+        var playBtn = FindChild<Grid>(thumbGrid, "PlayOverlay");
+
+        var fps = card.Segment.EffectiveFps;
+        if (fps <= 0) return; // 无 fps 无法帧窗预览（静止帧已给反馈）
+        var segStart = Math.Max(0, card.Segment.StartFrame);
+        var segEnd = card.Segment.EndFrame;
+        if (segEnd <= segStart) return;
+
+        var previewFrames = Math.Max(1, (int)Math.Round(BoundaryPreviewSeconds * fps));
+        int winStart, winEnd;
+        if (isStart) { winStart = segStart; winEnd = Math.Min(segEnd, segStart + previewFrames); }
+        else { winEnd = segEnd; winStart = Math.Max(segStart, segEnd - previewFrames); }
+        if (winEnd <= winStart) winEnd = winStart + 1;
+
+        Serilog.Log.Information(
+            "[BoundaryPreviewDiag] seq={Seq} isStart={IsStart} win=[{A},{B}) fps={Fps:F3}",
+            card.SequenceNumber, isStart, winStart, winEnd, fps);
+
+        var player = EnsureCardPlayer(videoHost, playBtn, badge, card);
+        if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
+        if (badge is not null) badge.Visibility = Visibility.Collapsed;
+        PrimePlayer(player, videoHost);
+        player.PlaySegment(card.VideoLocalPath!, card.ThumbnailPath, winStart, winEnd, fps);
     }
 
     /// <summary>从子元素沿可视树向上查找指定 x:Name 的祖先。</summary>

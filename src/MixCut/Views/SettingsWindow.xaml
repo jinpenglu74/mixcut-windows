@@ -10,8 +10,8 @@
         <Border DockPanel.Dock="Bottom" BorderBrush="#E5E5E7" BorderThickness="0,1,0,0"
                 Margin="0,12,0,0" Padding="0,12,0,0">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="关闭" Padding="18,7" IsCancel="True"
-                        Background="White" BorderBrush="#CCC" />
+                <Button Content="关闭" Style="{StaticResource SecondaryButtonStyle}"
+                        Padding="18,7" IsCancel="True" />
             </StackPanel>
         </Border>
 
@@ -149,10 +149,22 @@
                         <TextBlock Text="存储" FontSize="13" FontWeight="SemiBold"
                                    Foreground="#444" Margin="0,8,0,10" />
                         <StackPanel x:Name="PathPanel" Margin="0,0,0,8" />
-                        <Button x:Name="OpenDataDirButton" Content="📂  在资源管理器中打开"
-                                Padding="12,5" Margin="0,4,0,16" HorizontalAlignment="Left"
-                                Background="White" BorderBrush="#CCC"
-                                Click="OnOpenDataDir" />
+                        <StackPanel Orientation="Horizontal" Margin="0,4,0,4">
+                            <Button x:Name="OpenDataDirButton" Content="📂  在资源管理器中打开"
+                                    Padding="12,5" Margin="0,0,8,0"
+                                    Background="White" BorderBrush="#CCC"
+                                    Click="OnOpenDataDir" />
+                            <Button x:Name="ChangeDataDirButton" Content="📁  更改存储位置…"
+                                    Padding="12,5" Margin="0,0,8,0"
+                                    Background="White" BorderBrush="#CCC"
+                                    Click="OnChangeDataDir" />
+                            <Button x:Name="ResetDataDirButton" Content="↩  恢复默认(C盘)"
+                                    Padding="12,5"
+                                    Background="White" BorderBrush="#CCC"
+                                    Click="OnResetDataDir" />
+                        </StackPanel>
+                        <TextBlock Text="视频原片与语音模型都存在这里。装在小容量 C 盘时，可改到空间更大的盘。更改后需重启完成迁移。"
+                                   FontSize="11" Foreground="#888" TextWrapping="Wrap" Margin="0,0,0,16" />
 
                         <!-- 系统信息 -->
                         <TextBlock Text="系统信息" FontSize="13" FontWeight="SemiBold"

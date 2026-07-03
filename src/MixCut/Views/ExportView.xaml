@@ -10,6 +10,7 @@
             <TextBlock Text="导出概览" FontSize="12" FontWeight="SemiBold"
                        Foreground="#666" Margin="0,0,0,8" />
             <Border x:Name="OverviewPanel" Background="#F5F5F7" CornerRadius="10"
+                    BorderBrush="#E5E5E7" BorderThickness="1"
                     Padding="16,14" Margin="0,0,0,20">
                 <Grid>
                     <Grid.ColumnDefinitions>
