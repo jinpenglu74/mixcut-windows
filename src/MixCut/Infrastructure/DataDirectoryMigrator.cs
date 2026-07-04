@@ -258,6 +258,13 @@ public static class DataDirectoryMigrator
             TryDeleteDir(from, Log);
             foreach (var s in pending.ExtraFrom) TryDeleteDir(s, Log);
 
+            // 关键修复（v0.10.1）：from 若就是默认漫游锚点 %APPDATA%\MixCut（用户从默认位置往外搬，最常见），
+            // 上面 TryDeleteDir(from) 会把上面刚写进该锚点的指针文件 data-root.txt 连同整个目录一并删掉 →
+            // 下次启动 ReadConfiguredRoot() 读不到指针 → AppPaths 回落默认空目录 → 用户数据「消失」+ 被当新用户
+            // →（叠加迁移窗口触发的提前 Shutdown）启动崩溃。删完再断言一次指针兜底（幂等，重建锚点只放几十字节指针）。
+            if (pending.ToIsDefault) ClearPointer();
+            else WritePointer(to);
+
             ClearPending();
             Log("done OK");
             WriteMigrationLog(logLines);
@@ -274,6 +281,60 @@ public static class DataDirectoryMigrator
             WriteMigrationLog(logLines);
             return new MigrationResult(MigrationOutcome.Failed, Error: ex.Message);
         }
+    }
+
+    // ---------------- 自愈 v0.10.0 遗留：指针被误删的找回 ----------------
+
+    /// <summary>
+    /// 自愈 v0.10.0 的坑：那版迁移在 <c>from</c> 就是默认漫游锚点时，会把刚写的指针文件连同旧目录一起删掉
+    /// （已在 <see cref="RunPendingIfAny"/> 修复）。对已经踩坑的用户：数据其实已搬到别处，只是指针没了 →
+    /// 下次启动回落默认空目录、被当新用户。此方法在「无待迁移 且 当前读不到指针」时，从 migration.log 找到
+    /// 最后一次<b>成功完成</b>的迁移目标；若该目录存在、含 mixcut.db、且不是默认根，就把指针补回去。
+    /// <b>必须在任何 AppPaths 访问之前调用</b>（同迁移，App.OnStartup 最前面）。幂等；任何异常静默吞掉、不阻断启动。
+    /// </summary>
+    public static void RecoverLostPointerIfAny()
+    {
+        try
+        {
+            if (ReadConfiguredRoot() != null) return;     // 指针还在 → 无需自愈
+            if (HasPending()) return;                     // 有待迁移 → 交给 RunPendingIfAny，别抢
+
+            var dest = LastSuccessfulMigrationDest();
+            if (string.IsNullOrWhiteSpace(dest)) return;
+            if (!File.Exists(Path.Combine(dest, "mixcut.db"))) return; // 目标没数据库 → 不敢认
+            if (PathEquals(dest, ComputeDefaultRoot())) return;        // 目标就是默认位置 → 本就不需要指针
+
+            WritePointer(dest);
+            WriteMigrationLog(new[]
+            {
+                $"{DateTime.Now:HH:mm:ss.fff} [recover] 检测到指针丢失，已从迁移日志把指针恢复指向 '{dest}'（自愈 v0.10.0 遗留）"
+            });
+        }
+        catch { /* 自愈失败绝不影响启动 —— 大不了走默认目录 */ }
+    }
+
+    /// <summary>从 migration.log 解析最后一次「成功完成（done OK）」迁移的目标目录（配对其前的 begin 行 to='X'）。</summary>
+    private static string? LastSuccessfulMigrationDest()
+    {
+        foreach (var anchor in Anchors)
+        {
+            try
+            {
+                var f = Path.Combine(anchor, MigrationLogName);
+                if (!File.Exists(f)) continue;
+                string? lastDone = null;
+                string? curDest = null;
+                foreach (var line in File.ReadAllLines(f)) // UTF-8，中文路径正常还原
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(line, @"begin migrate from='.*?' to='(.*?)'");
+                    if (m.Success) { curDest = m.Groups[1].Value; continue; }
+                    if (line.Contains("done OK") && curDest != null) { lastDone = curDest; curDest = null; }
+                }
+                if (!string.IsNullOrWhiteSpace(lastDone)) return lastDone;
+            }
+            catch { /* 该锚点日志读不了，试下一个 */ }
+        }
+        return null;
     }
 
     // ---------------- 工具 ----------------

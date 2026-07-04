@@ -889,6 +889,9 @@ public partial class App : Application
         {
             if (Infrastructure.DataDirectoryMigrator.HasPending())
                 RunDataMigrationWithProgress();
+            else
+                // 自愈 v0.10.0 遗留：指针被误删但数据已搬到别处的用户，从迁移日志把指针找回来（否则会被当新用户）。
+                Infrastructure.DataDirectoryMigrator.RecoverLostPointerIfAny();
         }
         catch (Exception ex)
         {
@@ -1125,7 +1128,12 @@ public partial class App : Application
         if (!settings.HasCompletedOnboarding)
         {
             var onboarding = _host.Services.GetRequiredService<OnboardingWindow>();
-            onboarding.Owner = window;
+            // 兜底：仅当主窗口已就绪（有 HWND）才设 Owner；否则设 Owner 会抛「无法将 Owner 设置为之前
+            // 未显示的 Window」（见 RunDataMigrationWithProgress 的 ShutdownMode 说明）。设不了就不设，不阻断引导。
+            if (System.Windows.PresentationSource.FromVisual(window) is not null)
+            {
+                onboarding.Owner = window;
+            }
             onboarding.ShowDialog();
         }
 
@@ -1140,6 +1148,14 @@ public partial class App : Application
     /// </summary>
     private void RunDataMigrationWithProgress()
     {
+        // 关键修复（v0.10.1）：此刻是启动最早期，splash / MainWindow 都还没建，下面这个进度窗是 App 里
+        // 唯一的窗口。默认 ShutdownMode=OnLastWindowClose 下，win.Close() 关掉「最后一个窗口」会触发
+        // Application 关闭流程 → 之后 MainWindow.Show() 拿不到 HWND → onboarding.Owner=window 抛
+        // 「无法将 Owner 设置为之前未显示的 Window」→ 启动崩溃。迁移期间临时改 OnExplicitShutdown，finally 还原。
+        var prevShutdownMode = ShutdownMode;
+        ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        try
+        {
         var win = new Window
         {
             Title = "MixCut 数据迁移",
@@ -1181,6 +1197,11 @@ public partial class App : Application
                 $"数据迁移未完成，已保留原位置的数据（未丢失）。\n\n原因：{result.Error}\n\n" +
                 "可稍后在「设置 → 存储」里重试，或换一个空间更充足的盘。",
                 "MixCut 数据迁移", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        }
+        finally
+        {
+            ShutdownMode = prevShutdownMode; // 还原为默认（OnLastWindowClose），让 MainWindow 关闭时能正常退出
         }
     }
 
