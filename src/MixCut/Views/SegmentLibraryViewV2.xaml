@@ -828,16 +828,25 @@
                                                     ToolTip="起点向前一帧"
                                                     Command="{Binding AdjustStartCommand}"
                                                     CommandParameter="-1" />
+                                            <!-- 中间时间既是「显示当前起点秒数」也可**手动输入**（对齐旧版本被误删的小功能）：
+                                                 直接键入秒数（如 12.5）→ 回车 / 失焦生效（走 OnStartLostFocus→CommitStart）。
+                                                 − / + 按帧微调也会 OneWay 刷新这里。ToolTip 给出精确时间码，兼顾输入方便与帧信息。 -->
                                             <Border Grid.Column="2" Height="28" Margin="5,0"
                                                     Background="White"
                                                     BorderBrush="{StaticResource BorderPrimaryBrush}"
                                                     BorderThickness="1" CornerRadius="6">
-                                                <TextBlock Text="{Binding StartTimecode}"
-                                                           FontFamily="{StaticResource FontFamilyMono}"
-                                                           FontSize="10" FontWeight="SemiBold"
-                                                           Foreground="{StaticResource TextPrimaryBrush}"
-                                                           HorizontalAlignment="Center"
-                                                           VerticalAlignment="Center" />
+                                                <TextBox Text="{Binding StartTime, Mode=OneWay, StringFormat={}{0:F1}}"
+                                                         Tag="{Binding}"
+                                                         LostKeyboardFocus="OnStartLostFocus"
+                                                         KeyDown="OnStartKeyDown"
+                                                         ToolTip="{Binding StartTimecode}"
+                                                         FontFamily="{StaticResource FontFamilyMono}"
+                                                         FontSize="10" FontWeight="SemiBold"
+                                                         Foreground="{StaticResource TextPrimaryBrush}"
+                                                         Background="Transparent" BorderThickness="0"
+                                                         TextAlignment="Center"
+                                                         VerticalContentAlignment="Center"
+                                                         VerticalAlignment="Stretch" />
                                             </Border>
                                             <Button Grid.Column="3" Content="+"
                                                     Style="{StaticResource FrameStepButtonStyle}"
@@ -861,17 +870,23 @@
                                                     ToolTip="终点向前一帧"
                                                     Command="{Binding AdjustEndCommand}"
                                                     CommandParameter="-1" />
+                                            <!-- 终点同样可手动输入秒数（回车 / 失焦生效，走 OnEndLostFocus→CommitEnd）；结束边界不含，实际末帧见下方。 -->
                                             <Border Grid.Column="2" Height="28" Margin="5,0"
                                                     Background="White"
                                                     BorderBrush="{StaticResource BorderPrimaryBrush}"
                                                     BorderThickness="1" CornerRadius="6">
-                                                <TextBlock Text="{Binding EndTimecode}"
-                                                           FontFamily="{StaticResource FontFamilyMono}"
-                                                           FontSize="10" FontWeight="SemiBold"
-                                                           Foreground="{StaticResource TextPrimaryBrush}"
-                                                           HorizontalAlignment="Center"
-                                                           VerticalAlignment="Center"
-                                                           ToolTip="结束边界不包含；实际最后画面见下方" />
+                                                <TextBox Text="{Binding EndTime, Mode=OneWay, StringFormat={}{0:F1}}"
+                                                         Tag="{Binding}"
+                                                         LostKeyboardFocus="OnEndLostFocus"
+                                                         KeyDown="OnEndKeyDown"
+                                                         ToolTip="{Binding EndTimecode}"
+                                                         FontFamily="{StaticResource FontFamilyMono}"
+                                                         FontSize="10" FontWeight="SemiBold"
+                                                         Foreground="{StaticResource TextPrimaryBrush}"
+                                                         Background="Transparent" BorderThickness="0"
+                                                         TextAlignment="Center"
+                                                         VerticalContentAlignment="Center"
+                                                         VerticalAlignment="Stretch" />
                                             </Border>
                                             <Button Grid.Column="3" Content="+"
                                                     Style="{StaticResource FrameStepButtonStyle}"

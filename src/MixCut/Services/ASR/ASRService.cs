@@ -187,6 +187,33 @@ public sealed class ASRService
         // 8 核 → 6 线程；4 核 → 2 线程；2 核 → 2 线程。
         var threads = Math.Max(2, Environment.ProcessorCount - 2);
 
+        // 关键修复（v0.10.2）：whisper.cpp 用 ANSI fopen 读文件，**任一路径含非 ASCII 就原生崩溃**
+        // ExitCode=-1073740791 (0xC0000409 STATUS_STACK_BUFFER_OVERRUN) → 导入全挂在 ASR。触发两类：
+        //   ① 用户把数据目录改到「D:\新建文件夹」→ 模型落在中文路径；
+        //   ② **Windows 用户名是中文**（国内极常见）→ 默认 %LOCALAPPDATA% 模型目录 + %TEMP% 音频/输出全含中文，
+        //      全新安装什么都不改、一导入就崩（首发 0.3.0 潜伏至今，开发/测试机都是英文用户名没暴露）。
+        // 彻底绕过：进程工作目录设为模型目录（WorkingDirectory 走 Windows 宽字符 API，中文 OK），
+        // 模型 / 音频 / 输出**三者全部用相对 ASCII 文件名**传给 whisper，其 fopen 相对 cwd 打开即可。
+        // 音频原在 %TEMP%（中文用户名下也含中文），故非 ASCII 时把音频复制进模型目录、输出也写模型目录，
+        // 用相对名喂 whisper（复制仅几 MB、whisper 本就跑几十秒，开销可忽略）；纯 ASCII 环境不复制、零开销。
+        // 已实测中文目录 exit=0 且识别正确。whisper-cli 依赖 DLL 仍从其 exe 目录加载，不受 cwd 影响。
+        var modelDir = Path.GetDirectoryName(modelPath);
+        var haveModelDir = !string.IsNullOrEmpty(modelDir);
+        var modelArg = haveModelDir ? Path.GetFileName(modelPath) : modelPath;
+
+        var audioArg = audioPath;
+        var ofArg = outputPrefix;
+        string? tempAudioInModelDir = null;
+        if (haveModelDir && (HasNonAscii(audioPath) || HasNonAscii(outputPrefix)))
+        {
+            var tag = Guid.NewGuid().ToString("N");
+            tempAudioInModelDir = Path.Combine(modelDir!, "asr_" + tag + ".wav");
+            File.Copy(audioPath, tempAudioInModelDir, overwrite: true);
+            audioArg = "asr_" + tag + ".wav";               // 相对 cwd(=modelDir) 的 ASCII 名
+            ofArg = "asr_" + tag;                            // whisper 会写 modelDir\asr_<tag>.json
+            jsonPath = Path.Combine(modelDir!, "asr_" + tag + ".json"); // 读取 + 清理都指向真正的输出
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = BundledBinaries.WhisperCli,
@@ -195,13 +222,14 @@ public sealed class ASRService
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             StandardErrorEncoding = Encoding.UTF8,
+            WorkingDirectory = haveModelDir ? modelDir! : Environment.CurrentDirectory,
         };
         foreach (var arg in new[]
                  {
-                     "-m", modelPath, "-f", audioPath, "-l", language,
+                     "-m", modelArg, "-f", audioArg, "-l", language,
                      "-t", threads.ToString(CultureInfo.InvariantCulture),
                      "--print-progress",
-                     "--output-json-full", "-of", outputPrefix,
+                     "--output-json-full", "-of", ofArg,
                  })
         {
             psi.ArgumentList.Add(arg);
@@ -278,7 +306,18 @@ public sealed class ASRService
         finally
         {
             TryDelete(jsonPath);
+            if (tempAudioInModelDir is not null) TryDelete(tempAudioInModelDir); // 清理复制进模型目录的临时音频
         }
+    }
+
+    /// <summary>路径是否含非 ASCII 字符（whisper-cli 的 ANSI fopen 遇非 ASCII 会崩，据此决定是否改走相对路径）。</summary>
+    private static bool HasNonAscii(string s)
+    {
+        foreach (var c in s)
+        {
+            if (c > 127) return true;
+        }
+        return false;
     }
 
     // ---- whisper.cpp JSON 解析 ----

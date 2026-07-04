@@ -36,6 +36,7 @@ src/MixCut/Resources/bin/
 
 # Claude / 工具产物
 .claude/
+CLAUDE.local.md
 docs/superpowers/specs/*.draft.md
 
 # UI 优化临时截图/脚本（本地，不入库）

@@ -264,16 +264,29 @@ public partial class MainWindow : Window
         // 数据变化（导入视频/删除分镜/生成方案 等）：清空缓存让所有视图下次切回时强制 reload
         _viewLastLoadedProjectId.Clear();
         var currentId = _vm.ProjectVM.SelectedProject?.Id;
-        _vm.ProjectVM.FetchProjects();
-        UpdateNavEnabled();
-        if (currentId is { } id)
+
+        // 关键修复（v0.10.2）：FetchProjects 会清空并重填 Projects 集合，绑定的 ProjectList.SelectedItem
+        // 会**瞬时变 null** → 触发 OnProjectSelected 把 SelectedProject 置 null。之前 UpdateNavEnabled 恰好
+        // 在这个 null 瞬间被调用 → 把左侧导航灰掉禁用；而随后恢复选中时又没有再调 UpdateNavEnabled，
+        // 导致导入/分析期间（RefreshAfterProjectChange 反复触发）**左侧导航突然灰掉、点不动**。
+        // 修法：把「FetchProjects + 恢复选中」整段用 _suppressSelection 包住（不让瞬时 null 回调生效），
+        // 且 UpdateNavEnabled 放到**恢复选中之后**再调，按真实选中状态刷新可用性。
+        _suppressSelection = true;
+        try
         {
-            _suppressSelection = true;
-            var match = _vm.ProjectVM.Projects.FirstOrDefault(p => p.Id == id);
-            _vm.ProjectVM.SelectedProject = match;
-            ProjectList.SelectedItem = match;
+            _vm.ProjectVM.FetchProjects();
+            if (currentId is { } id)
+            {
+                var match = _vm.ProjectVM.Projects.FirstOrDefault(p => p.Id == id);
+                _vm.ProjectVM.SelectedProject = match;
+                ProjectList.SelectedItem = match;
+            }
+        }
+        finally
+        {
             _suppressSelection = false;
         }
+        UpdateNavEnabled();
         UpdateContent();
     }
 
