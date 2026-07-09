@@ -31,7 +31,7 @@
                         Background="{StaticResource AccentBlueBrush}" Foreground="White" BorderThickness="0"
                         Cursor="Hand" Padding="14,7" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"
                         ToolTipService.ShowOnDisabled="True" />
-                <Button x:Name="CloseBtn" Content="关闭" Click="OnCloseClick"
+                <Button x:Name="CloseBtn" Content="关闭" Click="OnCloseClick" ToolTip="关闭工作区（快捷键 Esc）"
                         Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
                         BorderBrush="{StaticResource BorderPrimaryBrush}" BorderThickness="1"
                         Cursor="Hand" Padding="12,7" FontSize="13" />

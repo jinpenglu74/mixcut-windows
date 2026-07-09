@@ -86,7 +86,9 @@ public partial class ShotEditWindow : Window
 
     private void RebuildAll()
     {
-        CaptionText.Text = _vm.SegmentCaption;
+        CaptionText.Text = _vm.Shots.Count > 0
+            ? $"{_vm.Shots.Count} 个镜头 · 共 {_vm.SegmentEnd - _vm.SegmentStart:F1}s · {_vm.SegmentCaption}"
+            : _vm.SegmentCaption;
         ComposeButton.IsEnabled = _vm.CanCompose && !_vm.IsComposing;
         ComposeButton.Content = _vm.IsComposing ? _vm.ComposeStatus : "合成新分镜";
         ComposeButton.ToolTip = _vm.IsComposing ? "正在合成，请稍候…"
