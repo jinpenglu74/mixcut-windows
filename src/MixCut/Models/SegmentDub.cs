@@ -29,6 +29,13 @@ public class SegmentDub
     /// <summary>改写后的台词（同 <see cref="TextVariantIndex"/> 的各音色行共享同文本）。</summary>
     public string RewrittenText { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 该改写版是否参与导出排列组合。默认 <c>false</c>（opt-in —— 勾选后才进方案笛卡尔积 / 单批量分镜导出，
+    /// 避免变体一多导出条数爆炸）。仅本版已生成音频时 UI 才显示勾选框；锁定原声时忽略此标志。
+    /// 对应 macOS SegmentDub.participatesInCombination。
+    /// </summary>
+    public bool ParticipatesInCombination { get; set; }
+
     // ---- 生成产物 ----
 
     /// <summary>按需生成的对齐后配音音频路径；初始 null 表示未生成。</summary>

@@ -92,6 +92,16 @@ public partial class SchemesView : UserControl, IProjectView
         {
             ProgressBanner.Visibility = _vm.IsGenerating ? Visibility.Visible : Visibility.Collapsed;
             ProgressText.Text = _vm.GenerationProgress;
+            // #8：AI 选策略阶段（fraction<0）不确定进度条；进入变体生成后切确定性 done/N 进度。
+            if (_vm.GenerationFraction < 0)
+            {
+                GenerateProgressBar.IsIndeterminate = true;
+            }
+            else
+            {
+                GenerateProgressBar.IsIndeterminate = false;
+                GenerateProgressBar.Value = _vm.GenerationFraction;
+            }
             GenerateButton.IsEnabled = !_vm.IsGenerating
                 && _project is not null && _project.SegmentCount > 0;
             ErrorBanner.Visibility = string.IsNullOrEmpty(_vm.ErrorMessage)
@@ -188,6 +198,9 @@ public partial class SchemesView : UserControl, IProjectView
 
     private void RefreshStrategyList()
     {
+        // 保留滚动位置：整栏重建（选中/展开变化都会调本方法）后恢复偏移，避免每次点方案跳回顶部。
+        var savedOffset = StrategyScroll?.VerticalOffset ?? 0;
+
         StrategyList.Children.Clear();
 
         var totalSchemes = _vm.Schemes.Count;
@@ -222,6 +235,13 @@ public partial class SchemesView : UserControl, IProjectView
 
         // issue #6：「＋ 添加结构」入口（自定义叙事结构）
         StrategyList.Children.Add(BuildAddNarrativeStructureEntry());
+
+        // 恢复滚动位置（等布局完成后再滚，否则新内容尚未测量、offset 会被钳到 0）。
+        if (savedOffset > 0)
+        {
+            Dispatcher.BeginInvoke(new Action(() => StrategyScroll?.ScrollToVerticalOffset(savedOffset)),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+        }
     }
 
     /// <summary>「＋ 添加结构」入口：打开叙事结构编辑器（issue #6）。</summary>
@@ -935,7 +955,7 @@ public partial class SchemesView : UserControl, IProjectView
                 Text = $"⊞ 可生成 {combosN} 个配音组合", FontSize = 10, FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(0x1D, 0x6B, 0xE5)),
                 VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "每个分镜可选「原声 + 各改写版」，全部排列组合的条数。在导出页点「导出配音组合」逐条出片。",
+                ToolTip = "每个分镜按「参与组合」勾选（原版 + 勾选的改写版）排列组合的条数。在分镜库右侧配音变体池里勾选参与项，在导出页点「导出配音组合」逐条出片。",
             };
             Grid.SetColumn(hint, 1);
             seqHeader.Children.Add(hint);

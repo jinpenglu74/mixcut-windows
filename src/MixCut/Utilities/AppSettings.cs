@@ -271,6 +271,27 @@ public sealed class AppSettings
         set => Set("last_export_dir_schemes", string.IsNullOrEmpty(value) ? null : value);
     }
 
+    /// <summary>导出分辨率下拉上次选择（ExportResolution 枚举序号）。默认 1（1080p）。</summary>
+    public int LastExportResolution
+    {
+        get => int.TryParse(Get("last_export_resolution"), out var i) ? Math.Max(0, i) : 1;
+        set => Set("last_export_resolution", Math.Max(0, value).ToString());
+    }
+
+    /// <summary>导出编码器下拉上次选择（ExportCodec 枚举序号）。默认 0。</summary>
+    public int LastExportCodec
+    {
+        get => int.TryParse(Get("last_export_codec"), out var i) ? Math.Max(0, i) : 0;
+        set => Set("last_export_codec", Math.Max(0, value).ToString());
+    }
+
+    /// <summary>导出质量下拉上次选择（ExportQuality 枚举序号）。默认 2（高）。</summary>
+    public int LastExportQuality
+    {
+        get => int.TryParse(Get("last_export_quality"), out var i) ? Math.Max(0, i) : 2;
+        set => Set("last_export_quality", Math.Max(0, value).ToString());
+    }
+
     /// <summary>上次选中的项目 ID（启动时自动恢复）。对齐 macOS @AppStorage("lastSelectedProjectId")。</summary>
     public Guid? LastSelectedProjectId
     {

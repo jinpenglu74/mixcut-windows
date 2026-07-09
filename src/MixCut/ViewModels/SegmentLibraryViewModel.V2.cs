@@ -520,6 +520,66 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     void ISegmentCardHost.RefreshCardFromHost(SegmentCardViewModel card) => card.RefreshFromSegment();
 
+    // ---- #12 分镜头 AI 画面替换 ----
+
+    /// <summary>请求打开「分镜头替换」工作区（View 订阅后开窗，避免 VM 依赖 View）。</summary>
+    public event Action<Segment>? ShotEditRequested;
+
+    Task ISegmentCardHost.RequestReplaceShotAsync(SegmentCardViewModel card)
+    {
+        ShotEditRequested?.Invoke(card.Segment);
+        return Task.CompletedTask;
+    }
+
+    async Task ISegmentCardHost.ToggleReplacedPictureAsync(SegmentCardViewModel card)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == card.Segment.Id);
+        if (seg is null || string.IsNullOrEmpty(seg.ReplacedPictureVideoPath)) return;
+        seg.PictureShowsReplaced = !seg.PictureShowsReplaced;
+        await db.SaveChangesAsync();
+        card.Segment.PictureShowsReplaced = seg.PictureShowsReplaced;   // 同步内存对象
+        card.RefreshFromSegment();
+        Views.Components.ToastService.Show(
+            seg.PictureShowsReplaced ? "已切到替换画面" : "已切回原画面", Views.Components.ToastStyle.Success);
+    }
+
+    async Task ISegmentCardHost.DeleteReplacedPictureAsync(SegmentCardViewModel card)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == card.Segment.Id);
+        if (seg is null) return;
+        var vid = seg.ReplacedPictureVideoPath;
+        var thumb = seg.ReplacedPictureThumbnailPath;
+        seg.InvalidateReplacedPicture();
+        await db.SaveChangesAsync();
+        TryDeleteFile(vid);
+        TryDeleteFile(thumb);
+        card.Segment.InvalidateReplacedPicture();
+        card.RefreshFromSegment();
+        Views.Components.ToastService.Show("已删除替换画面，还原原画面", Views.Components.ToastStyle.Success);
+    }
+
+    /// <summary>工作区合成完毕关闭后：把该分镜「替换画面」四字段从 DB 同步回内存卡片并刷新。</summary>
+    public async Task ReloadReplacedPictureAsync(Segment segment)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var seg = await db.Segments.AsNoTracking().FirstOrDefaultAsync(s => s.Id == segment.Id);
+        if (seg is null) return;
+        segment.ReplacedPictureVideoPath = seg.ReplacedPictureVideoPath;
+        segment.ReplacedPictureThumbnailPath = seg.ReplacedPictureThumbnailPath;
+        segment.ReplacedPictureFrameCount = seg.ReplacedPictureFrameCount;
+        segment.PictureShowsReplaced = seg.PictureShowsReplaced;
+        var card = _cardIndex.Values.FirstOrDefault(c => c.Segment.Id == segment.Id);
+        card?.RefreshFromSegment();
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        try { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); } catch { /* 忽略 */ }
+    }
+
     async Task<string> ISegmentCardHost.ReRecognizeSegmentAsync(SegmentCardViewModel card, CancellationToken ct)
     {
         try

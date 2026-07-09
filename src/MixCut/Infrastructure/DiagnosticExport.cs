@@ -67,7 +67,7 @@ public static class DiagnosticExport
         sb.AppendLine($"编码: {HardwareEncoderProbe.HardwareDescription}");
         sb.AppendLine($"解码: {HardwareEncoderProbe.DecodeHwaccelDescription}");
         sb.AppendLine($"Whisper 后端: {HardwareEncoderProbe.WhisperBackendDescription}");
-        sb.AppendLine($"导出并发: {ConcurrencyPolicy.ExplainExportFormula()}");
+        sb.AppendLine($"导出方式: {ConcurrencyPolicy.ExplainExportFormula()}");
         sb.AppendLine();
         sb.AppendLine("== nvidia-smi（显卡型号 + 驱动版本，N 卡导出问题首看这里）==");
         sb.AppendLine(await RunCaptureAsync("nvidia-smi", string.Empty, 6000));

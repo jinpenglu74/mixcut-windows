@@ -19,41 +19,45 @@ public partial class ExportView : UserControl, IProjectView
     private readonly ExportService _exportService;
     private readonly Services.Dubbing.DubExportService _dubExport;
     private readonly AppSettings _settings;
+    private readonly Action<NavigationItem>? _navigate;
     private string? _lastOutputDir;
 
     /// <summary>QW-11：批量导出的取消令牌。ExportService 早就支持 CancellationToken，
     /// 但 view 从来没传过 —— 现在接上，「取消」按钮 / ESC 能真正中断长任务。</summary>
     private CancellationTokenSource? _exportCts;
+    /// <summary>#11：导出进行中 —— 切项目/刷新时不许重启用导出按钮（防后台还在导时重入再点导出）。</summary>
+    private bool _isExporting;
 
     /// <summary>用户勾选的待导出方案 ID 集合。LoadProject 时默认全选当前项目所有方案。</summary>
     private readonly HashSet<Guid> _selectedSchemeIds = new();
 
     public ExportView(SchemeViewModel schemeVM, ExportService exportService,
-        Services.Dubbing.DubExportService dubExport, AppSettings settings)
+        Services.Dubbing.DubExportService dubExport, AppSettings settings,
+        Action<NavigationItem>? navigate = null)
     {
         _schemeVM = schemeVM;
         _exportService = exportService;
         _dubExport = dubExport;
         _settings = settings;
+        _navigate = navigate;
         InitializeComponent();
 
         foreach (var r in Enum.GetValues<ExportResolution>())
         {
             ResolutionCombo.Items.Add(r.Label());
         }
-        // 默认选 1080p（enum 顺序 Original=0, P1080=1）：与 ExportConfig 默认对齐，
-        // 避免「代码默认 1080p、UI 却显示原始分辨率」的矛盾。4K 仍可手选「原始分辨率」。
-        ResolutionCombo.SelectedIndex = (int)ExportResolution.P1080;
         foreach (var c in Enum.GetValues<ExportCodec>())
         {
             CodecCombo.Items.Add(c.Label());
         }
-        CodecCombo.SelectedIndex = 0;
         foreach (var q in Enum.GetValues<ExportQuality>())
         {
             QualityCombo.Items.Add(q.Label());
         }
-        QualityCombo.SelectedIndex = 2;
+        // #5：跨会话记忆上次的分辨率/编码/质量选择（clamp 防枚举增减越界）；默认 1080p/首编码器/高质量。
+        ResolutionCombo.SelectedIndex = Math.Clamp(_settings.LastExportResolution, 0, ResolutionCombo.Items.Count - 1);
+        CodecCombo.SelectedIndex = Math.Clamp(_settings.LastExportCodec, 0, CodecCombo.Items.Count - 1);
+        QualityCombo.SelectedIndex = Math.Clamp(_settings.LastExportQuality, 0, QualityCombo.Items.Count - 1);
 
         // 显示硬件加速探测结果（NVIDIA / Intel / AMD / MF / 无）
         HardwareStatusText.Text = "硬件加速：" + HardwareEncoderProbe.HardwareDescription;
@@ -65,8 +69,17 @@ public partial class ExportView : UserControl, IProjectView
         UpdateQualityHint();
     }
 
-    /// <summary>编码器/质量/分辨率变化时刷新质量提示（码率 + 文件大小估算）。</summary>
-    private void OnConfigChanged(object? sender, SelectionChangedEventArgs e) => UpdateQualityHint();
+    /// <summary>#15：空态「去生成方案」→ 跳到混剪方案页（消除死胡同）。</summary>
+    private void OnGoGenerateSchemes(object sender, RoutedEventArgs e) => _navigate?.Invoke(NavigationItem.Schemes);
+
+    /// <summary>编码器/质量/分辨率变化时刷新质量提示（码率 + 文件大小估算），并记忆选择（#5 跨会话）。</summary>
+    private void OnConfigChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (ResolutionCombo.SelectedIndex >= 0) _settings.LastExportResolution = ResolutionCombo.SelectedIndex;
+        if (CodecCombo.SelectedIndex >= 0) _settings.LastExportCodec = CodecCombo.SelectedIndex;
+        if (QualityCombo.SelectedIndex >= 0) _settings.LastExportQuality = QualityCombo.SelectedIndex;
+        UpdateQualityHint();
+    }
 
     private void UpdateQualityHint()
     {
@@ -134,6 +147,9 @@ public partial class ExportView : UserControl, IProjectView
     /// <summary>渲染策略 / 方案 checkbox 树。每次切项目 / 全选反选清空时调用。</summary>
     private void RefreshSelectionPanel()
     {
+        // 保留滚动位置：勾选一个框会整树重建，避免每次勾选跳回顶部。
+        var savedOffset = StrategyTreeScroll?.VerticalOffset ?? 0;
+
         StrategyTree.Items.Clear();
         var strategies = _schemeVM.Strategies;
         if (strategies.Count == 0)
@@ -149,6 +165,12 @@ public partial class ExportView : UserControl, IProjectView
         }
 
         UpdateSelectedCountLabel();
+
+        if (savedOffset > 0)
+        {
+            Dispatcher.BeginInvoke(new Action(() => StrategyTreeScroll?.ScrollToVerticalOffset(savedOffset)),
+                System.Windows.Threading.DispatcherPriority.Loaded);
+        }
     }
 
     /// <summary>构建单个策略的折叠组：策略三态 checkbox + 子方案 checkbox 列表。</summary>
@@ -305,7 +327,7 @@ public partial class ExportView : UserControl, IProjectView
         else
         {
             ExportAllButton.Content = $"📦  导出选中的 {n} 个";
-            ExportAllButton.IsEnabled = true;
+            ExportAllButton.IsEnabled = !_isExporting;   // #11：导出中不重启用（防重入）
         }
         UpdateDubButtonText();
         UpdateSelectedCountLabel();
@@ -336,7 +358,7 @@ public partial class ExportView : UserControl, IProjectView
         else
         {
             ExportDubButton.Content = $"🎤  导出配音组合（共 {totalCombos} 条）";
-            ExportDubButton.IsEnabled = true;
+            ExportDubButton.IsEnabled = !_isExporting;   // #11：导出中不重启用
         }
     }
 
@@ -430,28 +452,17 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
-        // v0.5.0：走 ConcurrencyPolicy 统一策略，有 GPU 编码时加成（NVENC/QSV/AMF +3 路）。
-        // 并按本批最高输出分辨率额外封顶（4K filter graph 极吃内存，多路并发会 OOM）。
-        var maxPixels = tasks.Max(t =>
-        {
-            var res = Services.Export.ExportService.ResolveResolution(
-                config.Resolution, t.Input.MaxWidth, t.Input.MaxHeight);
-            var parts = res.Split(':');
-            return (parts.Length == 2
-                    && long.TryParse(parts[0], out var w) && w > 0
-                    && long.TryParse(parts[1], out var h) && h > 0)
-                ? w * h : 1920L * 1080L;
-        });
-        var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count, maxPixels);
+        // #14（对齐 macOS v0.7.x）：所有导出一律串行，concurrency 恒为 1（一条一条导，避免占满机器）。
+        var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
         Serilog.Log.Information(
-            "[ExportConcurrency] tasks={Tasks} pixels={Pixels} concurrency={Concurrency} 说明={Explain}",
-            tasks.Count, maxPixels, concurrency,
-            Infrastructure.ConcurrencyPolicy.ExplainExportFormula(maxPixels));
+            "[ExportConcurrency] tasks={Tasks} concurrency={Concurrency} 说明={Explain}",
+            tasks.Count, concurrency,
+            Infrastructure.ConcurrencyPolicy.ExplainExportFormula());
 
         CompletePanel.Visibility = Visibility.Collapsed;
         ErrorPanel.Visibility = Visibility.Collapsed;
         ProgressSection.Visibility = Visibility.Visible;
-        ProgressTitle.Text = $"批量导出（共 {tasks.Count} 个 · {concurrency} 路并行）";
+        ProgressTitle.Text = $"串行导出（共 {tasks.Count} 个 · 一条一条导）";
         ExportAllButton.IsEnabled = false;
 
         // QW-11：每次导出新建取消令牌，「取消」按钮 / ESC 触发后整批 ffmpeg 立即收手。
@@ -459,12 +470,14 @@ public partial class ExportView : UserControl, IProjectView
         _exportCts = new CancellationTokenSource();
         var token = _exportCts.Token;
         CancelExportButton.IsEnabled = true;
+        _isExporting = true;
 
         var success = 0;
         var errors = new List<string>();
         var completed = 0;
         var canceled = false;
         var currentTaskNames = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
+        var exportSw = System.Diagnostics.Stopwatch.StartNew();
 
         using var semaphore = new SemaphoreSlim(concurrency);
         var exportJobs = tasks.Select(async (task, slot) =>
@@ -476,7 +489,7 @@ public partial class ExportView : UserControl, IProjectView
                 UpdateConcurrentProgress();
 
                 await _exportService.ExportAsync(task.Input, task.OutputPath, config,
-                    _ => UpdateConcurrentProgress(), token);
+                    p => UpdateConcurrentProgress(p.Progress), token);
                 Interlocked.Increment(ref success);
             }
             catch (OperationCanceledException)
@@ -512,6 +525,7 @@ public partial class ExportView : UserControl, IProjectView
 
         ProgressSection.Visibility = Visibility.Collapsed;
         CancelExportButton.IsEnabled = false;
+        _isExporting = false;
         UpdateExportButtonText(); // ExportAllButton 状态按当前选择数计算
 
         if (canceled)
@@ -540,7 +554,7 @@ public partial class ExportView : UserControl, IProjectView
                 success > 0 ? Components.ToastStyle.Warning : Components.ToastStyle.Error);
         }
 
-        void UpdateConcurrentProgress()
+        void UpdateConcurrentProgress(double sub = 0)
         {
             var done = completed;
             var inProgress = string.Join("、", currentTaskNames.Values.Take(2));
@@ -548,14 +562,29 @@ public partial class ExportView : UserControl, IProjectView
             {
                 inProgress += $" 等 {currentTaskNames.Count} 个";
             }
+            // 串行导出：总进度 = (已完成条数 + 当前这条 ffmpeg 的百分比) / 总条数 —— 大文件编码时进度条平滑推进，不再假死跳格。
+            var sc = Math.Clamp(sub, 0, 1);
+            var frac = done >= tasks.Count ? 1.0 : (done + sc) / tasks.Count;
+            var eta = EstimateEta(exportSw.Elapsed, frac);
             Dispatcher.Invoke(() =>
             {
-                ProgressBar.Value = (double)done / tasks.Count;
-                ProgressStatusText.Text = $"已完成 {done}/{tasks.Count}";
+                ProgressBar.Value = frac;
+                ProgressStatusText.Text = $"串行导出中… {done}/{tasks.Count}" + eta;
                 ProgressDetailText.Text = string.IsNullOrEmpty(inProgress)
                     ? string.Empty : "进行中：" + inProgress;
             });
         }
+    }
+
+    /// <summary>按已用时长 + 已完成比例估算剩余时间，返回「 · 预计剩余 mm:ss」；进度过小时不估（不准）。</summary>
+    private static string EstimateEta(TimeSpan elapsed, double fraction)
+    {
+        if (fraction <= 0.03 || fraction >= 1.0 || elapsed.TotalSeconds < 2) return string.Empty;
+        var remainSec = elapsed.TotalSeconds * (1 - fraction) / fraction;
+        if (remainSec < 1 || remainSec > 24 * 3600) return string.Empty;
+        var ts = TimeSpan.FromSeconds(remainSec);
+        var text = ts.TotalHours >= 1 ? $"{(int)ts.TotalHours}:{ts.Minutes:D2}:{ts.Seconds:D2}" : $"{ts.Minutes}:{ts.Seconds:D2}";
+        return $" · 预计剩余 {text}";
     }
 
     // ---- 配音组合导出（v0.5.0）：跨选中方案笛卡尔积展开成 N 条，逐条出片 ----
@@ -593,7 +622,7 @@ public partial class ExportView : UserControl, IProjectView
         // 确认弹窗（PRD §7.2）：先告知将生成多少条。
         var truncNote = truncatedSchemes > 0 ? $"\n（有 {truncatedSchemes} 个方案组合数超上限，已按每方案前 {Services.Dubbing.SchemeComboPlanner.MaxCombos} 条截取）" : "";
         var confirm = MessageBox.Show(
-            $"将生成 {jobs.Count} 条视频\n\n选中 {schemes.Count} 个方案，画面不变，按每个分镜的「原声 + 各改写版」全部排列组合逐条生成。{truncNote}",
+            $"将生成 {jobs.Count} 条视频\n\n选中 {schemes.Count} 个方案，画面不变，按每个分镜的「原声 + 各改写版」全部排列组合，串行逐条生成（一条一条导，避免占满机器）。{truncNote}",
             "导出配音组合", MessageBoxButton.OKCancel, MessageBoxImage.Information);
         if (confirm != MessageBoxResult.OK) return;
 
@@ -622,15 +651,13 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
-        // 自适应并发：配音导出每条都是多分镜渲染（较重），按硬件 + 最高分辨率封顶。
-        var maxPixels = tasks.Max(t => (long)t.Input.MaxWidth * Math.Max(1, t.Input.MaxHeight));
-        if (maxPixels <= 0) maxPixels = 1080L * 1920L;
-        var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count, maxPixels);
+        // #14（对齐 macOS v0.7.x）：配音组合导出同样一律串行，concurrency 恒为 1。
+        var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
 
         CompletePanel.Visibility = Visibility.Collapsed;
         ErrorPanel.Visibility = Visibility.Collapsed;
         ProgressSection.Visibility = Visibility.Visible;
-        ProgressTitle.Text = $"导出配音组合（共 {tasks.Count} 条 · {concurrency} 路并行）";
+        ProgressTitle.Text = $"串行导出配音组合（共 {tasks.Count} 条 · 一条一条导）";
         ExportAllButton.IsEnabled = false;
         ExportDubButton.IsEnabled = false;
 
@@ -638,12 +665,14 @@ public partial class ExportView : UserControl, IProjectView
         _exportCts = new CancellationTokenSource();
         var token = _exportCts.Token;
         CancelExportButton.IsEnabled = true;
+        _isExporting = true;
 
         var success = 0;
         var errors = new List<string>();
         var completed = 0;
         var canceled = false;
         var current = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
+        var exportSw = System.Diagnostics.Stopwatch.StartNew();
 
         using var semaphore = new SemaphoreSlim(concurrency);
         var exportJobs = tasks.Select(async (task, slot) =>
@@ -653,7 +682,7 @@ public partial class ExportView : UserControl, IProjectView
             {
                 current[slot] = task.Name;
                 Report();
-                await _dubExport.ExportAsync(task.Input, task.Item3, config, _ => Report(), token);
+                await _dubExport.ExportAsync(task.Input, task.Item3, config, p => Report(p.Progress), token);
                 Interlocked.Increment(ref success);
             }
             catch (OperationCanceledException) { canceled = true; }
@@ -676,6 +705,7 @@ public partial class ExportView : UserControl, IProjectView
 
         ProgressSection.Visibility = Visibility.Collapsed;
         CancelExportButton.IsEnabled = false;
+        _isExporting = false;
         UpdateExportButtonText();
 
         if (canceled)
@@ -697,15 +727,18 @@ public partial class ExportView : UserControl, IProjectView
                 success > 0 ? Components.ToastStyle.Warning : Components.ToastStyle.Error);
         }
 
-        void Report()
+        void Report(double sub = 0)
         {
             var done = completed;
             var inProgress = string.Join("、", current.Values.Take(2));
             if (current.Count > 2) inProgress += $" 等 {current.Count} 个";
+            var sc = Math.Clamp(sub, 0, 1);
+            var frac = done >= tasks.Count ? 1.0 : (done + sc) / tasks.Count;
+            var eta = EstimateEta(exportSw.Elapsed, frac);
             Dispatcher.Invoke(() =>
             {
-                ProgressBar.Value = (double)done / tasks.Count;
-                ProgressStatusText.Text = $"已完成 {done}/{tasks.Count}";
+                ProgressBar.Value = frac;
+                ProgressStatusText.Text = $"串行导出中… {done}/{tasks.Count}" + eta;
                 ProgressDetailText.Text = string.IsNullOrEmpty(inProgress) ? "" : "进行中：" + inProgress;
             });
         }

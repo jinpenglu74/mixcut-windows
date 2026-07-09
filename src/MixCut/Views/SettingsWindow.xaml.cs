@@ -301,7 +301,7 @@ public partial class SettingsWindow : Window
         // 并发数（v0.5.0 起 ConcurrencyPolicy 单一来源，含 GPU 加成透明拆解）
         AddInfoRow(SystemInfoPanel, "同时分析视频数",
             Infrastructure.ConcurrencyPolicy.ExplainAnalyzeFormula());
-        AddInfoRow(SystemInfoPanel, "同时导出视频数",
+        AddInfoRow(SystemInfoPanel, "导出方式",
             Infrastructure.ConcurrencyPolicy.ExplainExportFormula());
 
         AddInfoRow(SystemInfoPanel, "版本", version);
@@ -405,7 +405,7 @@ public partial class SettingsWindow : Window
                 btn.IsEnabled = true;
                 Serilog.Log.Warning(ex, "[DiagnosticExport] 导出诊断日志失败");
                 MessageBox.Show(
-                    "导出诊断日志失败：" + ex.Message + "\n\n" +
+                    "导出诊断日志失败：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex) + "\n\n" +
                     "可手动把以下文件夹里最新的 .log 发给开发者：\n" + Utilities.AppPaths.LogDirectory,
                     "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
@@ -639,7 +639,8 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show("打开数据目录失败：" + ex.Message, "错误",
+            Serilog.Log.Warning(ex, "[Settings] 打开数据目录失败");
+            MessageBox.Show("打开数据目录失败：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex), "错误",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -738,7 +739,9 @@ public partial class SettingsWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show("自动重启失败，请手动重新打开 MixCut 以完成迁移。\n" + ex.Message,
+            Serilog.Log.Warning(ex, "[Settings] 迁移后自动重启失败");
+            MessageBox.Show("自动重启失败，请手动重新打开 MixCut 以完成迁移。\n"
+                + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex),
                 "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         Application.Current.Shutdown();

@@ -59,6 +59,54 @@ public sealed partial class DubVariantInspectorViewModel : ObservableObject
         OnPropertyChanged(nameof(IsLocked));
         OnPropertyChanged(nameof(IsEmpty));
         OnPropertyChanged(nameof(IsPool));
+        OnPropertyChanged(nameof(ShowOriginalParticipation));
+        OnPropertyChanged(nameof(OriginalParticipatesInCombination));
+        NotifySlotCountChanged();
+    }
+
+    // ---- #13 参与排列组合 ----
+
+    /// <summary>是否显示「原版参与组合」行 + 「参与 N 档」计数（锁定原声的分镜不显示）。</summary>
+    public bool ShowOriginalParticipation => IsPool || IsEmpty;
+
+    /// <summary>原版（原声配音）是否参与导出组合。绑定 <see cref="Segment.OriginalParticipatesInCombination"/>，勾选即存库。</summary>
+    public bool OriginalParticipatesInCombination
+    {
+        get => Segment?.OriginalParticipatesInCombination ?? true;
+        set
+        {
+            if (Segment is null || Segment.OriginalParticipatesInCombination == value) return;
+            Segment.OriginalParticipatesInCombination = value;   // 同步共享对象，供档数即时刷新
+            OnPropertyChanged();
+            NotifySlotCountChanged();
+            _ = _dubbing.SetOriginalParticipatesAsync(Segment.Id, value);
+        }
+    }
+
+    /// <summary>该分镜当前参与组合的档数（UI「参与 N 档」）。锁定恒 1；否则 (原版参与?1:0)+勾选参与的改写版数，兜底 ≥1。</summary>
+    public int CombinationSlotCount
+    {
+        get
+        {
+            if (Segment is null) return 1;
+            if (Segment.IsVoiceLocked) return 1;
+            var baseCount = OriginalParticipatesInCombination ? 1 : 0;
+            var variantCount = Variants
+                .Where(v => v.HasAudio && v.ParticipatesInCombination)
+                .Select(v => v.TextVariantIndex)
+                .Distinct()
+                .Count();
+            return Math.Max(1, baseCount + variantCount);
+        }
+    }
+
+    public string SlotCountText => $"参与 {CombinationSlotCount} 档";
+
+    /// <summary>卡片勾选参与状态变化后，刷新「参与 N 档」计数。</summary>
+    internal void NotifySlotCountChanged()
+    {
+        OnPropertyChanged(nameof(CombinationSlotCount));
+        OnPropertyChanged(nameof(SlotCountText));
     }
 
     /// <summary>清空（切项目 / 取消选中）。</summary>
@@ -102,8 +150,12 @@ public sealed partial class DubVariantInspectorViewModel : ObservableObject
             Variants.Add(new DubVariantItemViewModel(d, Segment.Duration, _originalLength, this, _dubbing));
         }
         State = Variants.Count == 0 ? DubInspectorState.Empty : DubInspectorState.Pool;
-        Serilog.Log.Information("[DubDiag] 检视器加载 seg={Seg} variants={N} state={State}",
-            Segment.SegmentIndex, Variants.Count, State);
+        // 切换分镜时 State 值可能不变（Pool→Pool），OnStateChanged 不触发，这里显式刷新参与相关属性。
+        OnPropertyChanged(nameof(ShowOriginalParticipation));
+        OnPropertyChanged(nameof(OriginalParticipatesInCombination));
+        NotifySlotCountChanged();
+        Serilog.Log.Information("[DubDiag] 检视器加载 seg={Seg} variants={N} state={State} 参与档数={Slot}",
+            Segment.SegmentIndex, Variants.Count, State, CombinationSlotCount);
     }
 
     // ---- 命令 ----
@@ -167,12 +219,57 @@ public sealed partial class DubVariantItemViewModel : ObservableObject
     /// <summary>改写版字母 A/B/C…。</summary>
     public string VariantLetter => ((char)('A' + _dub.TextVariantIndex)).ToString();
 
-    [ObservableProperty] private string _rewrittenText;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsStale))]
+    private string _rewrittenText;
     [ObservableProperty] private bool _isEditing;
     [ObservableProperty] private string _editingText;
 
+    /// <summary>
+    /// P2-9：配音「过期」——已生成，但生成后分镜边界或台词变了（旧音频与当前画面/台词不匹配，导出会错位）。
+    /// 用生成时快照的帧号 + 文本哈希与当前对比。UI 显示橙色「过期·点↻重新生成」。
+    /// </summary>
+    public bool IsStale
+    {
+        get
+        {
+            if (!HasAudio) return false;
+            var seg = _inspector.Segment;
+            if (seg is null) return false;
+            return _dub.GeneratedForStartFrame != seg.StartFrame
+                || _dub.GeneratedForEndFrame != seg.EndFrame
+                || _dub.GeneratedForTextHash != DubbingViewModel.TextHash(RewrittenText);
+        }
+    }
+
+    /// <summary>P1-3：本卡正在生成/重新生成配音（TTS 网络往返数秒）。用于禁用按钮 + 显示 spinner，防重复点。</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsNotBusy))]
+    private bool _isBusy;
+    public bool IsNotBusy => !IsBusy;
+
     public bool HasAudio => !string.IsNullOrEmpty(_dub.AudioFilePath);
     public bool IsPlaying => _inspector.IsPlaying(_dub.Id);
+
+    /// <summary>#13：是否显示「参与组合」勾选框——仅本版已生成音频时（无音频不进组合）。</summary>
+    public bool ShowParticipation => HasAudio;
+
+    /// <summary>#13：本改写版是否参与导出排列组合（默认 false，opt-in）。勾选即存库并刷新「参与 N 档」。</summary>
+    public bool ParticipatesInCombination
+    {
+        get => _dub.ParticipatesInCombination;
+        set
+        {
+            if (_dub.ParticipatesInCombination == value) return;
+            _dub.ParticipatesInCombination = value;   // 同步本地副本，供档数即时统计
+            OnPropertyChanged();
+            _inspector.NotifySlotCountChanged();
+            if (_inspector.Segment is { } seg)
+            {
+                _ = _dubbing.SetVariantParticipatesAsync(seg.Id, _dub.TextVariantIndex, value);
+            }
+        }
+    }
 
     /// <summary>配音是否「过期」（已生成但边界/文本变了——简化：靠 Status==Pending 且无音频判断由上层刷新）。</summary>
     public bool IsGenerated => _dub.Status == SegmentDubStatus.Generated && HasAudio;
@@ -239,15 +336,25 @@ public sealed partial class DubVariantItemViewModel : ObservableObject
         if (t.Length == 0 || _inspector.Segment is null) { IsEditing = false; return; }
         IsEditing = false;
         if (t == RewrittenText) return;
-        await _dubbing.UpdateVariantTextAsync(_inspector.Segment.Id, _dub.TextVariantIndex, t);
-        await _inspector.RefreshVariantsAsync();
+        IsBusy = true;
+        try
+        {
+            await _dubbing.UpdateVariantTextAsync(_inspector.Segment.Id, _dub.TextVariantIndex, t);
+            await _inspector.RefreshVariantsAsync();
+        }
+        finally { IsBusy = false; }
     }
 
     [RelayCommand]
     private async Task GenerateAsync()
     {
-        await _dubbing.RegenerateAudioAsync(_dub.Id);
-        await _inspector.RefreshVariantsAsync();
+        IsBusy = true;
+        try
+        {
+            await _dubbing.RegenerateAudioAsync(_dub.Id);
+            await _inspector.RefreshVariantsAsync();
+        }
+        finally { IsBusy = false; }
     }
 
     [RelayCommand]

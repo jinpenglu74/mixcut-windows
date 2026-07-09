@@ -21,6 +21,8 @@ public class MixCutDbContext : DbContext
     public DbSet<SchemeSegment> SchemeSegments => Set<SchemeSegment>();
     public DbSet<ProjectVideo> ProjectVideos => Set<ProjectVideo>();
     public DbSet<SegmentDub> SegmentDubs => Set<SegmentDub>();
+    public DbSet<PhysicalShot> PhysicalShots => Set<PhysicalShot>();
+    public DbSet<ShotVariant> ShotVariants => Set<ShotVariant>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -82,6 +84,18 @@ public class MixCutDbContext : DbContext
         b.Entity<SegmentDub>()
             .HasOne(d => d.Segment).WithMany(s => s.SegmentDubs)
             .HasForeignKey(d => d.SegmentId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // 分镜 1──* 物理镜头（级联删除）。#12 分镜头 AI 画面替换。
+        b.Entity<PhysicalShot>()
+            .HasOne(p => p.Segment).WithMany(s => s.PhysicalShots)
+            .HasForeignKey(p => p.SegmentId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // 物理镜头 1──* 画面变体（级联删除）。
+        b.Entity<ShotVariant>()
+            .HasOne(v => v.Shot).WithMany(p => p.Variants)
+            .HasForeignKey(v => v.ShotId)
             .OnDelete(DeleteBehavior.Cascade);
     }
 }

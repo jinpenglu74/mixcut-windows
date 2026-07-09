@@ -48,6 +48,24 @@ public static class AppPaths
     public static string StemsDirectory(string videoHash) =>
         CreateDir(Path.Combine(Root, "Stems", videoHash));
 
+    /// <summary>
+    /// 分镜头 AI 画面变体产物目录（#12，按视频哈希 + 镜头 id 缓存）：
+    /// <c>&lt;Root&gt;\ShotVariants\{videoHash}\{shotId}</c>。存变体结果 mp4 + 缩略图 jpg。
+    /// </summary>
+    public static string ShotVariantsDirectory(string videoHash, Guid shotId) =>
+        CreateDir(Path.Combine(Root, "ShotVariants", videoHash, shotId.ToString("N")));
+
+    /// <summary>分镜头原画面首帧缩略图目录（#12）：<c>&lt;Root&gt;\ShotThumbnails\{videoHash}</c>。</summary>
+    public static string ShotThumbnailsDirectory(string videoHash) =>
+        CreateDir(Path.Combine(Root, "ShotThumbnails", videoHash));
+
+    /// <summary>
+    /// 分镜合成后的「替换画面」目录（#12，按视频哈希缓存）：
+    /// <c>&lt;Root&gt;\ReplacedPictures\{videoHash}</c>。存 {segmentId}.mp4 + {segmentId}.jpg。
+    /// </summary>
+    public static string ReplacedPicturesDirectory(string videoHash) =>
+        CreateDir(Path.Combine(Root, "ReplacedPictures", videoHash));
+
     // ---- 内部实现 ----
 
     /// <summary>用户是否把数据目录改到了自定义位置（非默认三级兜底）。模型等目录据此决定是否也跟着走。</summary>

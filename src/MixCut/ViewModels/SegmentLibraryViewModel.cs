@@ -720,11 +720,31 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
         }
         foreach (var item in affected) ReExtractText(item);
 
+        // R3（对齐 mac setFrameRange→invalidateReplacedPicture）：改了分镜边界 → 帧数已变，
+        // 旧 AI 替换画面片与新边界不再匹配，作废之，防导出/预览用到过时画面。
+        var pictureInvalidated = new List<Segment>();
+        foreach (var item in affected)
+        {
+            if (!string.IsNullOrEmpty(item.ReplacedPictureVideoPath))
+            {
+                item.InvalidateReplacedPicture();
+                pictureInvalidated.Add(item);
+            }
+        }
+
         if (Save())
         {
             _logger.LogInformation(
-                "[FrameEditDiag] segment={Segment} start={StartFrame} end={EndFrame} fps={Fps:F3} affected={Affected}",
-                segment.Id, segment.StartFrame, segment.EndFrame, fps, affected.Count);
+                "[FrameEditDiag] segment={Segment} start={StartFrame} end={EndFrame} fps={Fps:F3} affected={Affected} 作废替换画面={Invalidated}",
+                segment.Id, segment.StartFrame, segment.EndFrame, fps, affected.Count, pictureInvalidated.Count);
+            // 作废了替换画面的分镜：刷新其卡片（切换画面胶囊消失、缩略图回原画面）。
+            foreach (var item in pictureInvalidated)
+            {
+                if (_cardIndex.Values.FirstOrDefault(c => c.Segment.Id == item.Id) is { } card)
+                {
+                    card.RefreshFromSegment();
+                }
+            }
             return true;
         }
 

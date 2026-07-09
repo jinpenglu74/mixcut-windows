@@ -59,6 +59,14 @@ public class Segment
     /// <summary>🔒 保留原声：明星出镜等不可替换镜头，不参与改写/配音/换字幕。</summary>
     public bool IsVoiceLocked { get; set; }
 
+    /// <summary>
+    /// 原版（原声配音）是否参与导出排列组合。默认 <c>true</c>（原版默认参与）。
+    /// 配合各改写版的 <see cref="SegmentDub.ParticipatesInCombination"/> 共同决定该分镜的参与档数
+    /// （见 <see cref="CombinationSlotCount"/>）。锁定原声的分镜忽略此标志、恒只出原版。
+    /// 对应 macOS Segment.originalParticipatesInCombination。
+    /// </summary>
+    public bool OriginalParticipatesInCombination { get; set; } = true;
+
     /// <summary>是否对字幕区域做遮挡（false=直接烧录；true 时看 <see cref="MaskStyleRaw"/>）。</summary>
     public bool HasHardSubtitle { get; set; }
 
@@ -74,6 +82,20 @@ public class Segment
     /// </summary>
     public string? ClonedVoiceId { get; set; }
 
+    // ---- 分镜头 AI 画面替换（#12）----
+
+    /// <summary>替换画面合成后的 mp4 路径；null = 无替换画面（用原画面）。对应 mac replacedPictureVideoPath。</summary>
+    public string? ReplacedPictureVideoPath { get; set; }
+
+    /// <summary>替换画面首帧缩略图路径。</summary>
+    public string? ReplacedPictureThumbnailPath { get; set; }
+
+    /// <summary>替换画面片的实际帧数（合成后 ffprobe 探测；concat 统一到 30fps，帧数≠源 fps 累加值）。</summary>
+    public int ReplacedPictureFrameCount { get; set; }
+
+    /// <summary>当前是否显示替换画面（可在原画面 ↔ 替换画面间来回切）。对应 mac pictureShowsReplaced。</summary>
+    public bool PictureShowsReplaced { get; set; }
+
     // ---- 导航属性 ----
 
     public Guid? VideoId { get; set; }
@@ -83,6 +105,9 @@ public class Segment
 
     /// <summary>本分镜的配音变体池（= 改写版 × 音色）。</summary>
     public List<SegmentDub> SegmentDubs { get; set; } = new();
+
+    /// <summary>本分镜切出的物理镜头（分镜头替换工作区用；级联删除）。</summary>
+    public List<PhysicalShot> PhysicalShots { get; set; } = new();
 
     // ---- 计算属性 ----
 
@@ -179,6 +204,31 @@ public class Segment
         }
     }
 
+    /// <summary>
+    /// 参与导出排列组合的改写版：在 <see cref="EffectiveDubVariants"/>（已生成音频）基础上再筛
+    /// <see cref="SegmentDub.ParticipatesInCombination"/> 为真者。这是所有导出路径的单一真源。
+    /// 对应 macOS Segment.combinationDubVariants。
+    /// </summary>
+    [NotMapped]
+    public IReadOnlyList<SegmentDub> CombinationDubVariants
+        => EffectiveDubVariants.Where(d => d.ParticipatesInCombination).ToList();
+
+    /// <summary>
+    /// 该分镜参与组合的「档数」（UI「参与 N 档」= 此值，也是导出组合总数的连乘因子）。
+    /// 锁定原声恒 1；否则 = (原版参与?1:0) + 勾选参与的改写版数，兜底 <c>max(1, …)</c> 保证
+    /// 集合为空时回退「仅原版 ×1」、分镜不断档。对应 macOS Segment.combinationSlotCount。
+    /// </summary>
+    [NotMapped]
+    public int CombinationSlotCount
+    {
+        get
+        {
+            if (IsVoiceLocked) return 1;
+            var baseCount = OriginalParticipatesInCombination ? 1 : 0;
+            return Math.Max(1, baseCount + CombinationDubVariants.Count);
+        }
+    }
+
     /// <summary>时长（保证非负）。</summary>
     [NotMapped]
     public double Duration => EffectiveFps > 0
@@ -196,6 +246,54 @@ public class Segment
     /// <summary>有效帧率：优先用自身 <see cref="Fps"/>，回退到所属视频的 fps。0 表示未知。</summary>
     [NotMapped]
     public double EffectiveFps => Fps > 0 ? Fps : (Video?.Fps ?? 0);
+
+    // ---- 分镜头 AI 画面替换：有效画面单一真源（#12）----
+
+    /// <summary>
+    /// 当前生效画面（原画面 / AI 替换画面）。播放/缩略图/导出统一读它。
+    /// 当 <see cref="PictureShowsReplaced"/> 为真且替换片存在于磁盘 → 返回替换片整段
+    /// （替换片 fps 由 帧数/时长 反推，因 concat 统一到 30fps 与源 fps 不同）；否则返回原源视频帧区间。
+    /// 对应 macOS Segment.effectivePicture。
+    /// </summary>
+    [NotMapped]
+    public EffectivePicture EffectivePicture
+    {
+        get
+        {
+            var fallbackFps = EffectiveFps > 0 ? EffectiveFps : (Video?.Fps > 0 ? Video!.Fps : 30);
+            if (PictureShowsReplaced
+                && !string.IsNullOrEmpty(ReplacedPictureVideoPath)
+                && System.IO.File.Exists(ReplacedPictureVideoPath))
+            {
+                var dur = Duration;
+                var frameCount = Math.Max(1, ReplacedPictureFrameCount);
+                var repFps = dur > 0 ? frameCount / dur : fallbackFps;
+                return new EffectivePicture(
+                    ReplacedPictureVideoPath!, 0, dur, 0, frameCount, repFps,
+                    ReplacedPictureThumbnailPath, IsReplaced: true);
+            }
+            return new EffectivePicture(
+                Video?.LocalPath ?? string.Empty, StartTime, EndTime, StartFrame, EndFrame,
+                fallbackFps, ThumbnailPath, IsReplaced: false);
+        }
+    }
+
+    /// <summary>是否已有可用的 AI 替换画面（合成过、且当前显示替换）。</summary>
+    [NotMapped]
+    public bool HasReplacedPicture =>
+        PictureShowsReplaced && !string.IsNullOrEmpty(ReplacedPictureVideoPath);
+
+    /// <summary>
+    /// 作废整条分镜的替换画面（四字段全清）。改分镜帧范围 / 调整过镜头边界后必须调用，
+    /// 防导出用到与新边界不匹配的过时画面。旧文件不删（留孤儿 GC）。对应 mac invalidateReplacedPicture。
+    /// </summary>
+    public void InvalidateReplacedPicture()
+    {
+        ReplacedPictureVideoPath = null;
+        ReplacedPictureThumbnailPath = null;
+        ReplacedPictureFrameCount = 0;
+        PictureShowsReplaced = false;
+    }
 
     /// <summary>起点剪映式时间码（时:分:秒:帧，按 fps 进位）。fps 未知时退化为 分:秒。</summary>
     [NotMapped]

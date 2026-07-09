@@ -37,7 +37,7 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         _transcriptText = segment.Text ?? string.Empty;
         _positionType = segment.PositionType;
         _semanticTypes = new ObservableCollection<SemanticType>(segment.SemanticTypes);
-        _thumbnailPath = segment.ThumbnailPath;
+        _thumbnailPath = segment.EffectivePicture.ThumbnailPath ?? segment.ThumbnailPath;
         _segmentIndexLabel = segment.SegmentIndex ?? string.Empty;
 
         // 视频文件可用性 cache 一次（避免每次 UI 刷新都走 File.Exists）
@@ -367,6 +367,36 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         _host.RequestDelete(this);
     }
 
+    // ---- #12 分镜头 AI 画面替换 ----
+
+    /// <summary>本分镜是否已有 AI 替换画面（无论当前显示原/替换）。</summary>
+    public bool HasReplacedPicture => !string.IsNullOrEmpty(_segment.ReplacedPictureVideoPath);
+
+    /// <summary>当前是否显示替换画面。</summary>
+    public bool PictureShowsReplaced => _segment.PictureShowsReplaced;
+
+    /// <summary>切换画面胶囊的文案：当前显示替换画面 → "替换画面"，否则 "原画面"。对齐 mac。</summary>
+    public string PictureToggleLabel => _segment.PictureShowsReplaced ? "替换画面" : "原画面";
+
+    [RelayCommand]
+    private async Task ReplaceShot() => await _host.RequestReplaceShotAsync(this);
+
+    [RelayCommand]
+    private async Task ToggleReplacedPicture()
+    {
+        await _host.ToggleReplacedPictureAsync(this);
+        OnPropertyChanged(nameof(PictureShowsReplaced));
+        OnPropertyChanged(nameof(PictureToggleLabel));
+    }
+
+    [RelayCommand]
+    private async Task DeleteReplacedPicture()
+    {
+        await _host.DeleteReplacedPictureAsync(this);
+        OnPropertyChanged(nameof(HasReplacedPicture));
+        OnPropertyChanged(nameof(PictureShowsReplaced));
+    }
+
     [RelayCommand]
     private void ToggleSemantic(SemanticType type)
     {
@@ -478,7 +508,8 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         TranscriptText = _segment.Text ?? string.Empty;
         PositionType = _segment.PositionType;
         SemanticTypes = new ObservableCollection<SemanticType>(_segment.SemanticTypes);
-        ThumbnailPath = _segment.ThumbnailPath;
+        // #12：有替换画面时取替换缩略图（EffectivePicture 单一真源），否则原缩略图。
+        ThumbnailPath = _segment.EffectivePicture.ThumbnailPath ?? _segment.ThumbnailPath;
         SegmentIndexLabel = _segment.SegmentIndex ?? string.Empty;
         // P3 字幕处理属性刷新
         OnPropertyChanged(nameof(IsVoiceLocked));
@@ -486,6 +517,11 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(NeedsMaskEditor));
         OnPropertyChanged(nameof(SubtitlePreviewVisible));
         OnPropertyChanged(nameof(MaskRect));
+        // #12：合成/切换/删除替换画面后刷新「切换画面」胶囊 + 预览图。
+        OnPropertyChanged(nameof(HasReplacedPicture));
+        OnPropertyChanged(nameof(PictureShowsReplaced));
+        OnPropertyChanged(nameof(PictureToggleLabel));
+        OnPropertyChanged(nameof(PreviewImage));
     }
 
     public void Dispose()
@@ -525,4 +561,11 @@ public interface ISegmentCardHost
     Task<string> ReRecognizeSegmentAsync(SegmentCardViewModel card, CancellationToken ct = default);
     /// <summary>手动编辑台词落库（对齐 mac saveText）。返回清洗后的文本。</summary>
     Task<string> SaveSegmentTextAsync(SegmentCardViewModel card, string newText, CancellationToken ct = default);
+
+    /// <summary>#12：打开「分镜头替换」工作区。</summary>
+    Task RequestReplaceShotAsync(SegmentCardViewModel card);
+    /// <summary>#12：在原画面 ↔ 替换画面间切换（已有替换画面时）。</summary>
+    Task ToggleReplacedPictureAsync(SegmentCardViewModel card);
+    /// <summary>#12：删除替换画面、还原为原画面。</summary>
+    Task DeleteReplacedPictureAsync(SegmentCardViewModel card);
 }

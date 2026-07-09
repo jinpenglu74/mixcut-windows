@@ -42,14 +42,20 @@ public sealed record ExportInput(
         {
             var segment = schemeSeg.Segment;
             var video = segment?.Video;
-            if (segment is null || video is null || !File.Exists(video.LocalPath))
+            if (segment is null || video is null)
             {
-                skipped++; // 源文件丢失的分镜：统计后由调用方告知用户，不静默少导出
+                skipped++;
+                continue;
+            }
+            // #12：统一走 EffectivePicture（有 AI 替换画面则用替换、否则原源）—— 未替换时返回原值，行为不变。
+            var ep = segment.EffectivePicture;
+            if (string.IsNullOrEmpty(ep.VideoPath) || !File.Exists(ep.VideoPath))
+            {
+                skipped++; // 源/替换文件丢失的分镜：统计后由调用方告知用户，不静默少导出
                 continue;
             }
             segments.Add(new FrameClip(
-                video.LocalPath, segment.StartFrame, segment.EndFrame,
-                segment.EffectiveFps > 0 ? segment.EffectiveFps : 30));
+                ep.VideoPath, ep.StartFrame, ep.EndFrame, ep.Fps > 0 ? ep.Fps : 30));
             maxWidth = Math.Max(maxWidth, video.Width);
             maxHeight = Math.Max(maxHeight, video.Height);
         }

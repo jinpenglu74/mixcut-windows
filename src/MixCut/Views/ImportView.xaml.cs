@@ -200,8 +200,20 @@ public partial class ImportView : UserControl, IProjectView
         {
             return;
         }
-        await _importVM.ImportVideosAsync(paths, _project.Id);
-        _onChanged();
+        // fire-and-forget（拖拽/浏览导入）：必须自己兜异常，否则磁盘满/文件被占/DB 写失败会成为
+        // unobserved task exception，用户只当「拖了没反应」（§商用标准：不许静默失败）。
+        try
+        {
+            await _importVM.ImportVideosAsync(paths, _project.Id);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("导入失败：" + ExceptionTranslator.ToUserMessage(ex), Components.ToastStyle.Error);
+        }
+        finally
+        {
+            _onChanged();
+        }
     }
 
     // ---- 卡片操作 ----
@@ -220,6 +232,10 @@ public partial class ImportView : UserControl, IProjectView
         try
         {
             await _importVM.RetryAnalysisAsync(row.Video.Id);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("重试分析失败：" + ExceptionTranslator.ToUserMessage(ex), Components.ToastStyle.Error);
         }
         finally
         {
@@ -366,6 +382,10 @@ public partial class ImportView : UserControl, IProjectView
         {
             await _importVM.RetryASRAsync(row.Video.Id);
             Components.ToastService.Show("重新识别完成", Components.ToastStyle.Success);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("重新识别失败：" + ExceptionTranslator.ToUserMessage(ex), Components.ToastStyle.Error);
         }
         finally
         {

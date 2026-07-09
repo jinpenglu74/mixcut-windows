@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using Microsoft.Extensions.DependencyInjection;
 using MixCut.Models;
 using MixCut.ViewModels;
 using MixCut.ViewModels.Cards;
@@ -20,16 +21,19 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     private readonly SegmentLibraryViewModel _vm;
     private readonly Services.Export.VariantBatchExportService _variantExport;
     private readonly Utilities.AppSettings _settings;
+    private readonly IServiceProvider _services;
     private Project? _currentProject;
 
     public SegmentLibraryViewV2(
         SegmentLibraryViewModel vm,
         Services.Export.VariantBatchExportService variantExport,
-        Utilities.AppSettings settings)
+        Utilities.AppSettings settings,
+        IServiceProvider services)
     {
         _vm = vm;
         _variantExport = variantExport;
         _settings = settings;
+        _services = services;
         InitializeComponent();
         DataContext = _vm;
 
@@ -39,9 +43,28 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         _vm.SegmentsStructurallyChanged += OnSegmentsStructurallyChanged;
         // 调 IN/OUT 帧后播放境界窗口（对齐 Mac，见 OnBoundaryPreviewRequested）。
         _vm.BoundaryPreviewRequested += OnBoundaryPreviewRequested;
+        // #12：卡片右键「分镜头替换」→ VM 抛事件 → 这里开工作区窗口。
+        _vm.ShotEditRequested += OnShotEditRequested;
 
         Focusable = true;
         PreviewKeyDown += OnPreviewKeyDown;
+    }
+
+    /// <summary>#12：打开「分镜头替换」全屏工作区；关闭后把替换画面同步回卡片。</summary>
+    private async void OnShotEditRequested(Segment segment)
+    {
+        try
+        {
+            var vm = _services.GetRequiredService<ShotEditViewModel>();
+            var win = new ShotEditWindow(vm, segment) { Owner = Window.GetWindow(this) };
+            win.ShowDialog();
+            await _vm.ReloadReplacedPictureAsync(segment);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show(
+                "打开分镜头替换失败：" + ex.Message, Components.ToastStyle.Error);
+        }
     }
 
     public void LoadProject(Project project)
@@ -498,6 +521,17 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         StartHoverPlay(card, cardRoot);
     }
 
+    /// <summary>#12：点「切换画面」胶囊 → 在原画面 / AI 替换画面间切换（不触发播放）。</summary>
+    private void OnTogglePictureClick(object sender, MouseButtonEventArgs e)
+    {
+        e.Handled = true;   // 不冒泡到卡片播放 / 选中
+        if ((sender as FrameworkElement)?.DataContext is SegmentCardViewModel card
+            && card.ToggleReplacedPictureCommand.CanExecute(null))
+        {
+            card.ToggleReplacedPictureCommand.Execute(null);
+        }
+    }
+
     private void OnCardMouseLeave(object sender, MouseEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: SegmentCardViewModel card }) return;
@@ -624,8 +658,9 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
         if (badge is not null) badge.Visibility = Visibility.Collapsed;
         PrimePlayer(player, videoHost);
-        player.PlaySegment(card.VideoLocalPath!, card.ThumbnailPath,
-            card.Segment.StartFrame, card.Segment.EndFrame, card.Segment.EffectiveFps);
+        // #12：走 EffectivePicture —— 有 AI 替换画面则播替换视频（0..替换帧数），否则播原片段。未替换时返回原值。
+        var ep = card.Segment.EffectivePicture;
+        player.PlaySegment(ep.VideoPath, card.ThumbnailPath, ep.StartFrame, ep.EndFrame, ep.Fps);
     }
 
     /// <summary>

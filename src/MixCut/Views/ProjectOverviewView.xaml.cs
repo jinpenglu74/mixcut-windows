@@ -18,6 +18,18 @@ public partial class ProjectOverviewView : UserControl, IProjectView
     private Project? _currentProject;
     private bool _isEditingName;
 
+    // #4：概览页视频卡增量刷新缓存（按 video.Id）。导入分析每完成一个视频会重进 LoadProject，
+    // 全清重建会让整页卡片 + InlineVideoPlayer 销毁重建、肉眼闪烁；改为复用卡片、只更新变化文案。
+    private sealed class VideoCardHolder
+    {
+        public Border Border = null!;
+        public TextBlock Info = null!;
+        public Components.InlineVideoPlayer Player = null!;
+        public string? ThumbPath;
+    }
+    private readonly Dictionary<Guid, VideoCardHolder> _videoCards = new();
+    private Guid _cardsProjectId;
+
     public ProjectOverviewView(MainViewModel vm, Action<NavigationItem> navigate,
                                Action? onProjectChanged = null)
     {
@@ -62,54 +74,106 @@ public partial class ProjectOverviewView : UserControl, IProjectView
 
     private void BuildVideoCards(Project project)
     {
-        VideoGrid.Children.Clear();
-        foreach (var video in project.Videos)
+        // 切项目 → 缓存全部作废（旧卡属于别的项目）。
+        if (_cardsProjectId != project.Id)
         {
-            // v0.3.0 对齐 Mac：所有视频显示容器统一 9:16 手机端竖屏比例（信息流广告投放规格）。
-            // 视频原始横屏 → UniformToFill 裁剪填充；用户看到的就是投放规格。
-            const double thumbAspect = 9.0 / 16.0;
-            const double targetPlayerHeight = 280;
-            double playerHeight = targetPlayerHeight;
-            double playerWidth = playerHeight * thumbAspect;
-
-            var card = new Border
-            {
-                Width = playerWidth + 16,
-                Margin = new Thickness(0, 0, 12, 12),
-                Padding = new Thickness(8),
-                Background = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
-                CornerRadius = new CornerRadius(10),
-            };
-            var sp = new StackPanel();
-
-            var playerFrame = new Border
-            {
-                Width = playerWidth, Height = playerHeight,
-                Margin = new Thickness(0, 0, 0, 8),
-                CornerRadius = new CornerRadius(6), ClipToBounds = true,
-            };
-            var player = new Components.InlineVideoPlayer();
-            player.SetVideo(video.LocalPath, video.ThumbnailPath);
-            playerFrame.Child = player;
-            sp.Children.Add(playerFrame);
-
-            sp.Children.Add(new TextBlock
-            {
-                Text = video.Name, FontSize = 11, FontWeight = FontWeights.SemiBold,
-                TextTrimming = TextTrimming.CharacterEllipsis,
-            });
-            var duration = FormatDurationText(video.Duration);
-            var resolution = video.Width > 0 ? video.Resolution : "未知";
-            sp.Children.Add(new TextBlock
-            {
-                Text = $"{duration} · {resolution} · {video.Segments.Count} 分镜",
-                FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
-                Margin = new Thickness(0, 2, 0, 0),
-            });
-
-            card.Child = sp;
-            VideoGrid.Children.Add(card);
+            VideoGrid.Children.Clear();
+            _videoCards.Clear();
+            _cardsProjectId = project.Id;
         }
+
+        var videos = project.Videos.ToList();
+        var wantIds = new HashSet<Guid>(videos.Select(v => v.Id));
+
+        // 1) 移除已不存在的视频卡。
+        foreach (var goneId in _videoCards.Keys.Where(id => !wantIds.Contains(id)).ToList())
+        {
+            VideoGrid.Children.Remove(_videoCards[goneId].Border);
+            _videoCards.Remove(goneId);
+        }
+
+        // 2) 复用 / 新建。复用时只更新会变的信息文案（分镜数随分析递增）+ 缩略图变了才重设，播放器不重建。
+        foreach (var video in videos)
+        {
+            if (_videoCards.TryGetValue(video.Id, out var holder))
+            {
+                holder.Info.Text = InfoLine(video);
+                if (holder.ThumbPath != video.ThumbnailPath)
+                {
+                    holder.Player.SetVideo(video.LocalPath, video.ThumbnailPath);
+                    holder.ThumbPath = video.ThumbnailPath;
+                }
+            }
+            else
+            {
+                var created = CreateVideoCard(video);
+                _videoCards[video.Id] = created;
+                VideoGrid.Children.Add(created.Border);
+            }
+        }
+
+        // 3) 保证卡片顺序与 project.Videos 一致（新增可能落在末尾）。
+        for (var i = 0; i < videos.Count; i++)
+        {
+            var border = _videoCards[videos[i].Id].Border;
+            if (VideoGrid.Children.IndexOf(border) != i)
+            {
+                VideoGrid.Children.Remove(border);
+                VideoGrid.Children.Insert(i, border);
+            }
+        }
+    }
+
+    private static string InfoLine(Video video)
+    {
+        var duration = FormatDurationText(video.Duration);
+        var resolution = video.Width > 0 ? video.Resolution : "未知";
+        return $"{duration} · {resolution} · {video.Segments.Count} 分镜";
+    }
+
+    private static VideoCardHolder CreateVideoCard(Video video)
+    {
+        // v0.3.0 对齐 Mac：所有视频显示容器统一 9:16 手机端竖屏比例（信息流广告投放规格）。
+        const double thumbAspect = 9.0 / 16.0;
+        const double playerHeight = 280;
+        var playerWidth = playerHeight * thumbAspect;
+
+        var card = new Border
+        {
+            Width = playerWidth + 16,
+            Margin = new Thickness(0, 0, 12, 12),
+            Padding = new Thickness(8),
+            Background = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF7)),
+            CornerRadius = new CornerRadius(10),
+        };
+        var sp = new StackPanel();
+
+        var playerFrame = new Border
+        {
+            Width = playerWidth, Height = playerHeight,
+            Margin = new Thickness(0, 0, 0, 8),
+            CornerRadius = new CornerRadius(6), ClipToBounds = true,
+        };
+        var player = new Components.InlineVideoPlayer();
+        player.SetVideo(video.LocalPath, video.ThumbnailPath);
+        playerFrame.Child = player;
+        sp.Children.Add(playerFrame);
+
+        sp.Children.Add(new TextBlock
+        {
+            Text = video.Name, FontSize = 11, FontWeight = FontWeights.SemiBold,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        });
+        var info = new TextBlock
+        {
+            Text = InfoLine(video),
+            FontSize = 10, Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+            Margin = new Thickness(0, 2, 0, 0),
+        };
+        sp.Children.Add(info);
+
+        card.Child = sp;
+        return new VideoCardHolder { Border = card, Info = info, Player = player, ThumbPath = video.ThumbnailPath };
     }
 
     private static string FormatDurationText(double seconds)
@@ -253,28 +317,5 @@ public partial class ProjectOverviewView : UserControl, IProjectView
 
         private static ImageSource? LoadThumbnail(string? path) =>
             Infrastructure.ThumbnailCache.Shared.GetImage(path);
-
-        private static ImageSource? LoadThumbnail_Unused(string? path)
-        {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-            {
-                return null;
-            }
-            try
-            {
-                using var stream = File.OpenRead(path);
-                var bitmap = new BitmapImage();
-                bitmap.BeginInit();
-                bitmap.CacheOption = BitmapCacheOption.OnLoad;
-                bitmap.StreamSource = stream;
-                bitmap.EndInit();
-                bitmap.Freeze();
-                return bitmap;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
     }
 }

@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly ASRService _asrService;
     private readonly DubbingViewModel _dubbingVm;
     private readonly Services.Dubbing.DubExportService _dubExport;
+    private readonly IServiceProvider _services;
     private WelcomeView? _welcome;
     private readonly Dictionary<NavigationItem, FrameworkElement> _views = new();
     /// <summary>记录每个视图上次 LoadProject 的 projectId，避免 nav 切换时重复加载。</summary>
@@ -30,7 +31,8 @@ public partial class MainWindow : Window
         ASRService asrService,
         DubbingViewModel dubbingVm,
         Services.Dubbing.DubExportService dubExport,
-        UpdateBannerViewModel updateBannerVm)
+        UpdateBannerViewModel updateBannerVm,
+        IServiceProvider services)
     {
         _vm = vm;
         _settings = settings;
@@ -39,6 +41,7 @@ public partial class MainWindow : Window
         _asrService = asrService;
         _dubbingVm = dubbingVm;
         _dubExport = dubExport;
+        _services = services;
         InitializeComponent();
 
         // 初始化全局 Toast 容器（任何代码都可调 ToastService.Show 弹出反馈）
@@ -177,10 +180,10 @@ public partial class MainWindow : Window
             NavigationItem.ImportMedia => new ImportView(_vm.ImportVM, RefreshAfterProjectChange),
             // Feature flag：默认 V2（MVVM 数据驱动），失败时设 AppSettings.UseNewSegmentLibrary=false 回退 V1。
             NavigationItem.SegmentLibrary => _settings.UseNewSegmentLibrary
-                ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings)
+                ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings, _services)
                 : (FrameworkElement)new SegmentLibraryView(_vm.SegmentVM, _variantExportService, _settings),
             NavigationItem.Schemes => new SchemesView(_vm.SchemeVM, _vm.SegmentVM),
-            NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings),
+            NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings, NavigateTo),
             _ => new ProjectOverviewView(_vm, NavigateTo, RefreshAfterProjectChange),
         };
         _views[item] = view;
@@ -255,6 +258,13 @@ public partial class MainWindow : Window
                 or NavigationItem.Overview)
             {
                 UpdateContent();
+            }
+            // P0-2：在分镜库且右侧配音检视器已打开时，配音数据变化（尤其批量「克隆并改写」完成）
+            // 要刷新当前分镜的变体池，否则用户等半天却看到旧状态（像「点了没反应」）。
+            else if (_vm.SelectedNavItem is NavigationItem.SegmentLibrary
+                     && _vm.SegmentVM.DubInspector is { Segment: not null } inspector)
+            {
+                _ = inspector.RefreshVariantsAsync();
             }
         });
     }

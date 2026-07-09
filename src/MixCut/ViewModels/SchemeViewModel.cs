@@ -34,6 +34,10 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _generationProgress = string.Empty;
 
+    /// <summary>生成进度 0~1；-1 = 不确定（AI 选策略阶段无子进度）。UI 据此在确定/不确定进度条间切换。</summary>
+    [ObservableProperty]
+    private double _generationFraction = -1;
+
     [ObservableProperty]
     private string? _errorMessage;
 
@@ -153,6 +157,7 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
         var clampedTarget = Math.Min(targetVideoCount, 100);
 
         IsGenerating = true;
+        GenerationFraction = -1;   // Step 1（AI 选策略）无子进度 → 不确定进度条
         ErrorMessage = null;
 
         _context?.Dispose();
@@ -207,6 +212,7 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
 
             // Step 2: 所有策略并行生成组合。
             GenerationProgress = $"正在并行生成 {strategyResults.Count} 个策略的变体...";
+            GenerationFraction = 0;   // 进入可量化阶段
             var completed = 0;
             var tasks = strategyResults.Select(async (sr, index) =>
             {
@@ -218,6 +224,7 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
                         cancellationToken: cancellationToken);
                     var done = Interlocked.Increment(ref completed);
                     GenerationProgress = $"已完成 {done}/{strategyResults.Count} 个策略...";
+                    GenerationFraction = (double)done / strategyResults.Count;
                     return (Index: index, Strategy: sr, Compositions: compositions);
                 }
                 catch (Exception ex)

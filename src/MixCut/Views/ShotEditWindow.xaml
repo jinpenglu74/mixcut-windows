@@ -1,0 +1,67 @@
+<Window x:Class="MixCut.Views.ShotEditWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        mc:Ignorable="d"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        Title="分镜头替换" Height="720" Width="980" MinHeight="600" MinWidth="780"
+        WindowStartupLocation="CenterOwner" Background="White"
+        TextOptions.TextFormattingMode="Display" TextOptions.TextRenderingMode="ClearType">
+    <Grid Margin="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- [A] 顶栏 -->
+        <Grid Grid.Row="0" Margin="16,12">
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock Text="分镜头替换" FontSize="17" FontWeight="Bold"
+                           Foreground="{StaticResource TextPrimaryBrush}" />
+                <TextBlock x:Name="CaptionText" FontSize="12" TextTrimming="CharacterEllipsis"
+                           Foreground="{StaticResource TextTertiaryBrush}" Margin="0,2,0,0" MaxWidth="600"
+                           HorizontalAlignment="Left" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <Button x:Name="ComposeButton" Content="合成新分镜" Click="OnComposeClick"
+                        Background="{StaticResource AccentBlueBrush}" Foreground="White" BorderThickness="0"
+                        Cursor="Hand" Padding="14,7" FontSize="13" FontWeight="SemiBold" Margin="0,0,8,0"
+                        ToolTipService.ShowOnDisabled="True" />
+                <Button x:Name="CloseBtn" Content="关闭" Click="OnCloseClick"
+                        Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
+                        BorderBrush="{StaticResource BorderPrimaryBrush}" BorderThickness="1"
+                        Cursor="Hand" Padding="12,7" FontSize="13" />
+            </StackPanel>
+        </Grid>
+        <Border Grid.Row="0" Height="1" VerticalAlignment="Bottom"
+                Background="{StaticResource BorderSubtleBrush}" />
+
+        <!-- [B] 分镜头轨道 -->
+        <ScrollViewer x:Name="TrackScroll" Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                      Padding="16,12" MaxHeight="240" PreviewMouseWheel="OnTrackWheel">
+            <StackPanel x:Name="TrackPanel" Orientation="Horizontal" />
+        </ScrollViewer>
+
+        <!-- 选中镜头编辑行 -->
+        <StackPanel x:Name="EditRowPanel" Grid.Row="2" Orientation="Horizontal" Margin="16,0,16,10" />
+
+        <Border Grid.Row="3" Height="1" Background="{StaticResource BorderSubtleBrush}" />
+
+        <!-- [C] 版本区 -->
+        <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" Padding="16">
+            <StackPanel x:Name="VersionPanel" />
+        </ScrollViewer>
+
+        <!-- [D] 错误横幅 -->
+        <Border x:Name="ErrorBanner" Grid.Row="5" Background="#14C06F00" Padding="12,10" Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="⚠" FontSize="14" Foreground="#C06F00" Margin="0,0,8,0" VerticalAlignment="Center" />
+                <TextBlock x:Name="ErrorText" FontSize="12" Foreground="#C06F00" TextWrapping="Wrap" MaxWidth="900" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

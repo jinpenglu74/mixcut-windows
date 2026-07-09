@@ -63,11 +63,12 @@
                                 FontSize="10" Cursor="Hand" Background="White" Foreground="#1D6BE5"
                                 BorderBrush="#1D6BE5" BorderThickness="1" VerticalAlignment="Center" />
                     </Grid>
-                    <ProgressBar IsIndeterminate="True" Height="3" Margin="0,6,0,0" />
+                    <ProgressBar x:Name="GenerateProgressBar" IsIndeterminate="True" Minimum="0" Maximum="1"
+                                 Height="3" Margin="0,6,0,0" />
                 </StackPanel>
             </Border>
 
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ScrollViewer x:Name="StrategyScroll" VerticalScrollBarVisibility="Auto">
                 <StackPanel x:Name="StrategyList" Margin="0,4,0,4" />
             </ScrollViewer>
         </DockPanel>

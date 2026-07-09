@@ -128,6 +128,10 @@ public sealed partial class VideoGroupViewModel : ObservableObject
         await _dubbing.RewriteAllAsync(VideoId);
     }
 
+    /// <summary>P1-5：取消本视频正在进行的配音流水线。</summary>
+    [RelayCommand]
+    private void CancelDub() => _dubbing?.CancelDub(VideoId);
+
     [RelayCommand]
     private void IncVariant() { if (VariantCount < 5) VariantCount++; }
 

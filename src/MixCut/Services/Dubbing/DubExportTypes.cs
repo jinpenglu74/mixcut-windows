@@ -55,12 +55,18 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
             var schemeSeg = ordered[idx];
             var segment = schemeSeg.Segment;
             var video = segment?.Video;
-            if (segment is null || video is null || string.IsNullOrEmpty(video.LocalPath) || !File.Exists(video.LocalPath))
+            if (segment is null || video is null)
+            {
+                continue;
+            }
+            // #12：画面源统一走 EffectivePicture（有替换用替换、否则原源）；未替换时返回原值，行为不变。
+            var ep = segment.EffectivePicture;
+            if (string.IsNullOrEmpty(ep.VideoPath) || !File.Exists(ep.VideoPath))
             {
                 continue;
             }
 
-            var fps = video.Fps > 0 ? video.Fps : 30;
+            var fps = ep.Fps > 0 ? ep.Fps : 30;
             maxW = Math.Max(maxW, video.Width);
             maxH = Math.Max(maxH, video.Height);
 
@@ -72,7 +78,7 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
             {
                 // 锁定/无选定 → 保留原声原字幕（不烧新字幕，hasHardSubtitle:false 防遮到要保留的原字幕）
                 specs.Add(new DubSegmentSpec(
-                    video.LocalPath, segment.StartFrame, segment.EndFrame, fps,
+                    ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     segment.Text, false, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
             }
@@ -80,7 +86,7 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
             {
                 var caption = string.IsNullOrEmpty(chosen.RewrittenText) ? segment.Text : chosen.RewrittenText;
                 specs.Add(new DubSegmentSpec(
-                    video.LocalPath, segment.StartFrame, segment.EndFrame, fps,
+                    ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     caption, segment.HasHardSubtitle, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: false, DubAudioPath: chosen.AudioFilePath,
                     chosen.FreezePadFrames, chosen.TrailingSilence, BgmPath(video)));
@@ -89,7 +95,7 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
             {
                 // 非锁定但无已生成配音 → 回退原声（不烧新字幕）
                 specs.Add(new DubSegmentSpec(
-                    video.LocalPath, segment.StartFrame, segment.EndFrame, fps,
+                    ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     segment.Text, false, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
             }
@@ -116,7 +122,10 @@ public static class SchemeComboPlanner
     public sealed record Combo(IReadOnlyList<Guid?> Choices, string NameSuffix);
     public sealed record Plan(IReadOnlyList<Combo> Combos, int FeasibleCount, bool Truncated);
 
-    /// <summary>理论组合总数（不真正生成；用于 UI「将生成 N 条」）。每非锁定槽选项数 = 1 + 已生成变体数。</summary>
+    /// <summary>
+    /// 理论组合总数（不真正生成；用于 UI「将生成 N 条」）。#13：每槽档数 = <see cref="Segment.CombinationSlotCount"/>
+    /// （锁定恒 1；否则 (原版参与?1:0)+勾选参与的改写版数，兜底 ≥1）——与档数公式单一真源一致。
+    /// </summary>
     public static int FeasibleCount(MixScheme scheme)
     {
         var n = 1;
@@ -124,7 +133,7 @@ public static class SchemeComboPlanner
         {
             var seg = ss.Segment;
             if (seg is null) continue;
-            n *= seg.IsVoiceLocked ? 1 : 1 + seg.EffectiveDubVariants.Count;
+            n *= seg.CombinationSlotCount;
             if (n >= 1_000_000) return 1_000_000;
         }
         return n;
@@ -135,15 +144,19 @@ public static class SchemeComboPlanner
         var ordered = scheme.OrderedSegments;
         if (ordered.Count == 0) return new Plan(Array.Empty<Combo>(), 0, false);
 
+        // #13：每槽可选集合 = 锁定→仅原声；否则 (原版参与?原声:∅) ∪ 勾选参与的改写版。
         var slots = ordered.Select(ss =>
         {
             var seg = ss.Segment;
             return seg is null
-                ? new SlotOptions(true, Array.Empty<Guid>())
-                : new SlotOptions(seg.IsVoiceLocked, seg.EffectiveDubVariants.Select(d => d.Id).ToList());
+                ? new SlotOptions(true, true, Array.Empty<Guid>())
+                : new SlotOptions(
+                    seg.IsVoiceLocked,
+                    seg.IsVoiceLocked || seg.OriginalParticipatesInCombination,
+                    seg.CombinationDubVariants.Select(d => d.Id).ToList());
         }).ToList();
 
-        var result = VariantCombinationGenerator.Generate(slots, MaxCombos, includeOriginal: true);
+        var result = VariantCombinationGenerator.Generate(slots, MaxCombos);
 
         var combos = result.Combinations.Select(choices =>
         {
@@ -164,8 +177,12 @@ public static class SchemeComboPlanner
     private static string Letter(int index) => index is >= 0 and < 26 ? ((char)('A' + index)).ToString() : (index + 1).ToString();
 }
 
-/// <summary>一个分镜槽的配音可选项（笛卡尔积输入）。对应 mac SlotOptions。</summary>
-public readonly record struct SlotOptions(bool IsLocked, IReadOnlyList<Guid> DubIds);
+/// <summary>
+/// 一个分镜槽的配音可选项（笛卡尔积输入）。对应 mac SlotOptions。
+/// #13：<paramref name="IncludeOriginal"/> = 原声是否作为该槽一个选项（锁定槽应恒 true）；
+/// <paramref name="DubIds"/> 只含<b>勾选参与组合</b>的改写版。
+/// </summary>
+public readonly record struct SlotOptions(bool IsLocked, bool IncludeOriginal, IReadOnlyList<Guid> DubIds);
 
 /// <summary>组合采样结果。对应 mac CombinationResult。</summary>
 public sealed record CombinationResult(IReadOnlyList<IReadOnlyList<Guid?>> Combinations, int FeasibleCount, bool Truncated);
@@ -178,15 +195,18 @@ public static class VariantCombinationGenerator
 {
     private const int FeasibleCap = 1_000_000;
 
-    public static CombinationResult Generate(IReadOnlyList<SlotOptions> slots, int limit, bool includeOriginal = false)
+    public static CombinationResult Generate(IReadOnlyList<SlotOptions> slots, int limit)
     {
-        // 每槽实际可选集合（变体按 id 升序保证确定性）
+        // 每槽实际可选集合（变体按 id 升序保证确定性）。#13：原声是否入选由每槽 IncludeOriginal 决定；
+        // 集合为空（原版没勾、也没勾任何变体）→ 兜底回退仅原声，保证分镜不断档。
         var choices = slots.Select(slot =>
         {
             if (slot.IsLocked) return new List<Guid?> { null };
             var variants = slot.DubIds.OrderBy(g => g.ToString()).Select(g => (Guid?)g).ToList();
-            if (includeOriginal) { var l = new List<Guid?> { null }; l.AddRange(variants); return l; }
-            return variants.Count == 0 ? new List<Guid?> { null } : variants;
+            var list = new List<Guid?>();
+            if (slot.IncludeOriginal) list.Add(null);
+            list.AddRange(variants);
+            return list.Count == 0 ? new List<Guid?> { null } : list;
         }).ToList();
 
         long feasible = 1;

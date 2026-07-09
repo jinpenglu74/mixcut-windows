@@ -27,8 +27,8 @@ public sealed record VariantExportProgress(
 public static class VariantExportInput
 {
     /// <summary>
-    /// <paramref name="segments"/> 必须已加载 <c>Video</c> 与 <c>SegmentDubs</c>（变体读 EffectiveDubVariants）。
-    /// 保留原声的分镜只出原版；未保留原声的分镜出「原版 + 每个已生成变体」。
+    /// <paramref name="segments"/> 必须已加载 <c>Video</c> 与 <c>SegmentDubs</c>（变体读 CombinationDubVariants）。
+    /// #13：保留原声的分镜只出原版；否则出「(原版参与?原版:∅) + 各勾选参与组合的改写版」，都没勾则兜底出原版。
     /// </summary>
     public static IReadOnlyList<VariantExportJob> From(
         IReadOnlyList<Segment> segments, Func<Segment, int> numberProvider)
@@ -44,12 +44,14 @@ public static class VariantExportInput
             segById[seg.Id] = seg;
             var stem = Path.GetFileNameWithoutExtension(video.Name);
             var variants = new List<VariantRef>();
-            foreach (var dub in seg.EffectiveDubVariants)
+            // #13：只展开「勾选参与组合」的改写版（CombinationDubVariants），不再全部变体无条件参与。
+            foreach (var dub in seg.CombinationDubVariants)
             {
                 dubById[dub.Id] = dub;
                 variants.Add(new VariantRef(dub.Id, dub.TextVariantIndex));
             }
-            sources.Add(new SegmentExportSource(seg.Id, numberProvider(seg), stem, seg.IsVoiceLocked, variants));
+            sources.Add(new SegmentExportSource(
+                seg.Id, numberProvider(seg), stem, seg.IsVoiceLocked, seg.OriginalParticipatesInCombination, variants));
         }
 
         var items = SegmentExportExpander.Expand(sources);
@@ -59,7 +61,9 @@ public static class VariantExportInput
         {
             if (!segById.TryGetValue(item.SegmentId, out var seg) || seg.Video is null) continue;
             var video = seg.Video;
-            var fps = video.Fps > 0 ? video.Fps : 30;
+            // #12：画面源统一走 EffectivePicture（有替换用替换、否则原源）；未替换时返回原值，行为不变。
+            var ep = seg.EffectivePicture;
+            var fps = ep.Fps > 0 ? ep.Fps : 30;
             var dur = seg.Duration;
 
             if (item.DubId is { } dubId && dubById.TryGetValue(dubId, out var dub)
@@ -67,7 +71,7 @@ public static class VariantExportInput
             {
                 var caption = string.IsNullOrEmpty(dub.RewrittenText) ? seg.Text : dub.RewrittenText;
                 var spec = new DubSegmentSpec(
-                    video.LocalPath, seg.StartFrame, seg.EndFrame, fps,
+                    ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     caption, seg.HasHardSubtitle, seg.MaskStyleRaw, seg.MaskRect,
                     IsVoiceLocked: false, DubAudioPath: dub.AudioFilePath,
                     dub.FreezePadFrames, dub.TrailingSilence, BgmPath(video));
@@ -76,7 +80,7 @@ public static class VariantExportInput
             else
             {
                 jobs.Add(new VariantExportJob(false, item.FileName, dur,
-                    video.LocalPath, seg.StartFrame, seg.EndFrame, fps, null, 0, 0));
+                    ep.VideoPath, ep.StartFrame, ep.EndFrame, fps, null, 0, 0));
             }
         }
         return jobs;

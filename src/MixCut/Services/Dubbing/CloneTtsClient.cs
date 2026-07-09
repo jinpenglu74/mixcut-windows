@@ -101,10 +101,18 @@ public sealed class CloneTtsClient
         for (var i = 0; i < maxTries; i++)
         {
             var r = await SynthesizeAsync(text, voiceId, ct);
-            if (best is null || r.RawDuration < best.RawDuration) best = r;
-            if (r.RawDuration <= cleanLimit) break; // 看着干净，直接用
+            if (best is null) best = r;
+            else if (r.RawDuration < best.RawDuration) { TryDelete(best.WavPath); best = r; }  // 丢弃更长的旧结果 wav
+            else TryDelete(r.WavPath);                                                          // 丢弃更差的新结果 wav
+            if (best.RawDuration <= cleanLimit) break; // 看着干净，直接用
         }
         return best!;
+    }
+
+    private static void TryDelete(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        try { if (File.Exists(path)) File.Delete(path); } catch { /* 忽略临时 wav 清理失败 */ }
     }
 
     private static string Trunc(string s) => s.Length <= 300 ? s : s[..300];

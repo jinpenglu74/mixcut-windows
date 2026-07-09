@@ -91,28 +91,17 @@ public class ExportRobustnessTests
         Assert.Equal(0, int.Parse(parts[1]) % 2);
     }
 
-    // ---- 分辨率感知并发：4K 串行、未知不限 ----
+    // ---- #14（对齐 macOS v0.7.x）：所有导出一律串行，并发度恒为 1 ----
 
-    [Fact]
-    public void Concurrency_4k_CappedToOne()
+    [Theory]
+    [InlineData(40, 0)]                          // 大批量 · 未知分辨率
+    [InlineData(40, 2160L * 3840L)]              // 大批量 · 4K 竖屏
+    [InlineData(1, 1920L * 1080L)]               // 单条 · 1080p
+    [InlineData(int.MaxValue, 0)]                // 默认参数
+    public void Concurrency_AlwaysSerial(int tasksCount, long outputPixels)
     {
-        // 2160×3840 = 8.29M px ≥ 4K → 串行，与有无 GPU/核数无关。
-        long pixels4k = 2160L * 3840L;
-        Assert.Equal(1, ConcurrencyPolicy.MaxExportConcurrency(tasksCount: 40, outputPixels: pixels4k));
-    }
-
-    [Fact]
-    public void Concurrency_UnknownPixels_KeepsLegacyBehavior()
-    {
-        // 0 = 未知 → 不额外限制（保持旧行为），且不小于 1。
-        var legacy = ConcurrencyPolicy.MaxExportConcurrency(tasksCount: 40, outputPixels: 0);
-        Assert.True(legacy >= 1);
-    }
-
-    [Fact]
-    public void Concurrency_NeverExceedsTaskCount()
-    {
-        Assert.Equal(1, ConcurrencyPolicy.MaxExportConcurrency(tasksCount: 1, outputPixels: 1920L * 1080L));
+        // 不论任务数、分辨率、有无 GPU，导出一律串行（一条一条导）。
+        Assert.Equal(1, ConcurrencyPolicy.MaxExportConcurrency(tasksCount, outputPixels));
     }
 
     // ---- 人话报错：不含原生错误码/stderr 原文 ----

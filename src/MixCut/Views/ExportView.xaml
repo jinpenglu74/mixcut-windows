@@ -55,8 +55,17 @@
             <Border x:Name="NoSchemeHint" Background="#FFF5E0" BorderBrush="#FFD080"
                     BorderThickness="1" CornerRadius="8" Padding="12,8"
                     Margin="0,0,0,16" Visibility="Collapsed">
-                <TextBlock Text="⚠ 暂无可导出的方案，请先在「混剪方案」页面生成方案"
-                           FontSize="12" Foreground="#7A5800" />
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="⚠ 暂无可导出的方案，请先在「混剪方案」页面生成方案"
+                               VerticalAlignment="Center" FontSize="12" Foreground="#7A5800" />
+                    <Button Grid.Column="1" Content="✨ 去生成方案" Click="OnGoGenerateSchemes"
+                            Cursor="Hand" Padding="10,4" FontSize="11" Margin="12,0,0,0"
+                            Background="#1D6BE5" Foreground="White" BorderThickness="0" />
+                </Grid>
             </Border>
 
             <!-- 设置 -->
@@ -117,7 +126,7 @@
                                     Background="White" BorderBrush="#CCC" BorderThickness="1" Cursor="Hand"/>
                         </StackPanel>
                     </Grid>
-                    <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer x:Name="StrategyTreeScroll" MaxHeight="240" VerticalScrollBarVisibility="Auto">
                         <ItemsControl x:Name="StrategyTree"/>
                     </ScrollViewer>
                 </StackPanel>

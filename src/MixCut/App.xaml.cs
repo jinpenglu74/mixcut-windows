@@ -81,6 +81,13 @@ public partial class App : Application
         services.AddSingleton<Services.Dubbing.ParaformerAsrClient>();
         services.AddSingleton<Services.Dubbing.SegmentReRecognizer>();
 
+        // #12 分镜头 AI 画面替换：切分 / AI 变体 / 合成（单例）。
+        services.AddSingleton<Services.ShotEdit.ShotSlicerService>();
+        services.AddSingleton<Services.ShotEdit.WanVideoEditClient>();
+        services.AddSingleton<Services.ShotEdit.ShotVariantService>();
+        services.AddSingleton<Services.ShotEdit.ShotCompositionService>();
+        services.AddTransient<ShotEditViewModel>();   // 每个分镜头工作区一个
+
         // ViewModel（单例，主窗口持有）。
         services.AddSingleton<ProjectViewModel>();
         services.AddSingleton<ImportViewModel>();
@@ -990,6 +997,42 @@ public partial class App : Application
             // 每个分镜单独克隆音色（配音跟本段原声一致）：Segment 新增自己的克隆音色列
             AddColumnIfMissing(db, "Segments", "ClonedVoiceId", "TEXT");
             AddColumnIfMissing(db, "SchemeSegments", "SelectedSegmentDubId", "TEXT");
+            // #13 配音变体参与排列组合：原版默认参与(1)、改写版默认不参与(0，opt-in)
+            AddColumnIfMissing(db, "Segments", "OriginalParticipatesInCombination", "INTEGER NOT NULL DEFAULT 1");
+            AddColumnIfMissing(db, "SegmentDubs", "ParticipatesInCombination", "INTEGER NOT NULL DEFAULT 0");
+            // #12 分镜头 AI 画面替换：Segment 四个「替换画面」列 + PhysicalShots / ShotVariants 两张新表
+            AddColumnIfMissing(db, "Segments", "ReplacedPictureVideoPath", "TEXT");
+            AddColumnIfMissing(db, "Segments", "ReplacedPictureThumbnailPath", "TEXT");
+            AddColumnIfMissing(db, "Segments", "ReplacedPictureFrameCount", "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "Segments", "PictureShowsReplaced", "INTEGER NOT NULL DEFAULT 0");
+            CreateTableIfMissing(db, "PhysicalShots", @"
+                CREATE TABLE IF NOT EXISTS ""PhysicalShots"" (
+                    ""Id"" TEXT NOT NULL CONSTRAINT ""PK_PhysicalShots"" PRIMARY KEY,
+                    ""SegmentId"" TEXT NULL,
+                    ""OrderIndex"" INTEGER NOT NULL DEFAULT 1,
+                    ""StartFrame"" INTEGER NOT NULL DEFAULT 0,
+                    ""EndFrame"" INTEGER NOT NULL DEFAULT 0,
+                    ""SelectedVariantId"" TEXT NULL,
+                    ""ThumbnailPath"" TEXT NULL,
+                    CONSTRAINT ""FK_PhysicalShots_Segments_SegmentId"" FOREIGN KEY (""SegmentId"")
+                        REFERENCES ""Segments"" (""Id"") ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ""IX_PhysicalShots_SegmentId"" ON ""PhysicalShots"" (""SegmentId"");");
+            CreateTableIfMissing(db, "ShotVariants", @"
+                CREATE TABLE IF NOT EXISTS ""ShotVariants"" (
+                    ""Id"" TEXT NOT NULL CONSTRAINT ""PK_ShotVariants"" PRIMARY KEY,
+                    ""ShotId"" TEXT NULL,
+                    ""Prompt"" TEXT NOT NULL DEFAULT '',
+                    ""StatusRaw"" TEXT NOT NULL DEFAULT 'Pending',
+                    ""TaskId"" TEXT NULL,
+                    ""ResultVideoPath"" TEXT NULL,
+                    ""ThumbnailPath"" TEXT NULL,
+                    ""FriendlyError"" TEXT NULL,
+                    ""CreatedAt"" TEXT NOT NULL DEFAULT '',
+                    CONSTRAINT ""FK_ShotVariants_PhysicalShots_ShotId"" FOREIGN KEY (""ShotId"")
+                        REFERENCES ""PhysicalShots"" (""Id"") ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ""IX_ShotVariants_ShotId"" ON ""ShotVariants"" (""ShotId"");");
             CreateTableIfMissing(db, "SegmentDubs", @"
                 CREATE TABLE IF NOT EXISTS ""SegmentDubs"" (
                     ""Id"" TEXT NOT NULL CONSTRAINT ""PK_SegmentDubs"" PRIMARY KEY,
@@ -1007,6 +1050,7 @@ public partial class App : Application
                     ""GeneratedForEndFrame"" INTEGER NOT NULL DEFAULT -1,
                     ""GeneratedForTextHash"" TEXT NOT NULL DEFAULT '',
                     ""StatusRaw"" TEXT NOT NULL DEFAULT 'Pending',
+                    ""ParticipatesInCombination"" INTEGER NOT NULL DEFAULT 0,
                     CONSTRAINT ""FK_SegmentDubs_Segments_SegmentId"" FOREIGN KEY (""SegmentId"")
                         REFERENCES ""Segments"" (""Id"") ON DELETE CASCADE
                 );
