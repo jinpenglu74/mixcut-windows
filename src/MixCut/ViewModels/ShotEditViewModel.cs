@@ -54,6 +54,8 @@ public sealed class ShotEditViewModel
     public HashSet<Guid> BusyVariantIds { get; } = new();
     public bool IsSlicing { get; private set; }
     public bool IsComposing { get; private set; }
+    /// <summary>合成阶段文案（切片 i/N → 拼接 → 混音），供合成按钮实时显示进度。</summary>
+    public string ComposeStatus { get; private set; } = "合成中…";
     public string? ErrorMessage { get; private set; }
     public int SelectedOrderIndex { get; set; } = 1;
 
@@ -453,8 +455,10 @@ public sealed class ShotEditViewModel
                 slots.Add(new ShotSlotInput(shot.StartFrame, shot.EndFrame, variantPath));
             }
 
+            ComposeStatus = "合成中…";
             var result = await _composition.ComposeAsync(
-                SourceVideoPath, Fps, slots, SegmentStart, SegmentEnd, ct);
+                SourceVideoPath, Fps, slots, SegmentStart, SegmentEnd,
+                phase => { ComposeStatus = phase; RaiseChanged(); }, ct);
 
             // 落地到 ReplacedPictures 目录。
             var dir = AppPaths.ReplacedPicturesDirectory(VideoHash);

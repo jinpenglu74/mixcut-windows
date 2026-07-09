@@ -37,7 +37,7 @@ public sealed class ShotCompositionService
     /// </summary>
     public async Task<ShotCompositionResult> ComposeAsync(
         string sourceVideoPath, double fps, IReadOnlyList<ShotSlotInput> slots,
-        double segmentStart, double segmentEnd, CancellationToken ct = default)
+        double segmentStart, double segmentEnd, Action<string>? onPhase = null, CancellationToken ct = default)
     {
         if (fps <= 0 || slots.Count == 0)
         {
@@ -53,6 +53,7 @@ public sealed class ShotCompositionService
             var totalFrames = 0;
             for (var i = 0; i < slots.Count; i++)
             {
+                onPhase?.Invoke($"合成中… 处理镜头 {i + 1}/{slots.Count}");
                 var slot = slots[i];
                 var targetFrames = Math.Max(1, slot.EndFrame - slot.StartFrame);
                 totalFrames += targetFrames;
@@ -72,10 +73,12 @@ public sealed class ShotCompositionService
             }
 
             // 2) concat 拼接（统一 720:1280 + 30fps + yuv420p，与导出同源）。
+            onPhase?.Invoke("合成中… 拼接画面");
             var joined = Path.Combine(workDir, "joined.mp4");
             await _ffmpeg.ConcatAsync(clips, joined, resolution: Resolution, cancellationToken: ct);
 
             // 3) 取原分镜整段音频（复用原音频，防音画漂移）。
+            onPhase?.Invoke("合成中… 混音");
             var hasAudio = await _ffmpeg.ProbeHasAudioAsync(sourceVideoPath, ct);
             string? audioPath = null;
             if (hasAudio)

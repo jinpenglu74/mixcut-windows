@@ -87,7 +87,7 @@ public partial class ShotEditWindow : Window
     {
         CaptionText.Text = _vm.SegmentCaption;
         ComposeButton.IsEnabled = _vm.CanCompose && !_vm.IsComposing;
-        ComposeButton.Content = _vm.IsComposing ? "合成中…" : "合成新分镜";
+        ComposeButton.Content = _vm.IsComposing ? _vm.ComposeStatus : "合成新分镜";
         ComposeButton.ToolTip = _vm.IsComposing ? "正在合成，请稍候…"
             : _vm.CanCompose ? "把各分镜头选定的版本拼成新画面，就地替换本分镜"
             : "先给每个分镜头位置各选一个版本（原版或已完成变体）才能合成";
