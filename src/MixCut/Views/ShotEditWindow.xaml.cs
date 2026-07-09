@@ -17,6 +17,7 @@ public partial class ShotEditWindow : Window
 {
     private readonly ShotEditViewModel _vm;
     private readonly Segment _segment;
+    private readonly Utilities.AppSettings? _settings;
     private TextBox? _promptBox;
     private FrameworkElement? _selectedShotCard;   // 当前选中镜头卡（切换后自动滚动到可见）
 
@@ -42,11 +43,13 @@ public partial class ShotEditWindow : Window
         ("整体风格", new[] { "把整个画面调成清晨柔光、暖色调" }),
     };
 
-    public ShotEditWindow(ShotEditViewModel vm, Segment segment)
+    public ShotEditWindow(ShotEditViewModel vm, Segment segment, Utilities.AppSettings? settings = null)
     {
         InitializeComponent();
         _vm = vm;
         _segment = segment;
+        _settings = settings;
+        if (settings is not null) { Width = settings.ShotEditWidth; Height = settings.ShotEditHeight; }
         _vm.Changed += OnVmChanged;
         _vm.VariantProgress += OnVariantProgress;
         Loaded += async (_, _) =>
@@ -59,6 +62,16 @@ public partial class ShotEditWindow : Window
         {
             _vm.Changed -= OnVmChanged;
             _vm.VariantProgress -= OnVariantProgress;
+            // 记忆工作区尺寸（用户拉大看更多镜头，下次还在）。
+            if (_settings is not null && WindowState == WindowState.Normal)
+            {
+                try
+                {
+                    if (ActualWidth >= 780) _settings.ShotEditWidth = ActualWidth;
+                    if (ActualHeight >= 600) _settings.ShotEditHeight = ActualHeight;
+                }
+                catch { /* 忽略 */ }
+            }
         };
         // 键盘：ESC 关闭（合成中不关）；←/→ 切换选中镜头（power-user）。焦点在提示词输入框时不拦左右键。
         PreviewKeyDown += (_, e) =>

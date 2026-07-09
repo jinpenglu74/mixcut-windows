@@ -56,7 +56,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         try
         {
             var vm = _services.GetRequiredService<ShotEditViewModel>();
-            var win = new ShotEditWindow(vm, segment) { Owner = Window.GetWindow(this) };
+            var win = new ShotEditWindow(vm, segment, _settings) { Owner = Window.GetWindow(this) };
             win.ShowDialog();
             await _vm.ReloadReplacedPictureAsync(segment);
         }

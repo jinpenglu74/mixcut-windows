@@ -315,6 +315,22 @@ public sealed class AppSettings
         set => Set("window_maximized", value ? "1" : "0");
     }
 
+    /// <summary>分镜头替换工作区上次宽度（&lt;780 无效回默认 980）。</summary>
+    public double ShotEditWidth
+    {
+        get => double.TryParse(Get("shotedit_width"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 780 ? v : 980;
+        set => Set("shotedit_width", value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>分镜头替换工作区上次高度（&lt;600 无效回默认 720）。</summary>
+    public double ShotEditHeight
+    {
+        get => double.TryParse(Get("shotedit_height"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 600 ? v : 720;
+        set => Set("shotedit_height", value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
     /// <summary>上次选中的项目 ID（启动时自动恢复）。对齐 macOS @AppStorage("lastSelectedProjectId")。</summary>
     public Guid? LastSelectedProjectId
     {
