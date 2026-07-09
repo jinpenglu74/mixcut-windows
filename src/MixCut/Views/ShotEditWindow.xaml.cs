@@ -54,8 +54,11 @@ public partial class ShotEditWindow : Window
         _vm.VariantProgress += OnVariantProgress;
         Loaded += async (_, _) =>
         {
-            RebuildAll();
-            try { await _vm.LoadShotsAsync(segment); }
+            try
+            {
+                RebuildAll();
+                await _vm.LoadShotsAsync(segment);
+            }
             catch (Exception ex) { ShowError("切分镜头失败：" + ex.Message); }
         };
         Closed += (_, _) =>
