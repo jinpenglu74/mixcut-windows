@@ -245,6 +245,10 @@ public sealed class VocalSeparationService
 
     private async Task<string> EnsureModelAsync(IProgress<string>? onProgress, CancellationToken ct)
     {
+        // 内置优先（对齐 ASRService.FindModel）：完整安装包把模型放进 bin/，装完即用、永不下载。
+        var bundled = Path.Combine(BundledBinaries.BinDirectory, ModelFileName);
+        if (File.Exists(bundled) && new FileInfo(bundled).Length > 0) return bundled;
+
         var dest = Path.Combine(AppPaths.DemucsModelsDirectory, ModelFileName);
         if (File.Exists(dest) && new FileInfo(dest).Length > 0) return dest;
 

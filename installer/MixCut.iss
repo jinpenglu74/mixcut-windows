@@ -4,7 +4,7 @@
 ; 输出：installer\out\MixCut-Setup-vX.Y.Z-win-x64.exe
 
 #define MyAppName "MixCut"
-#define MyAppVersion "0.9.0"
+#define MyAppVersion "0.11.0"
 #define MyAppPublisher "MixCut"
 #define MyAppURL "https://github.com/RoshanGH/mixcut-windows"
 #define MyAppExeName "MixCut.exe"
@@ -43,11 +43,9 @@ SolidCompression=yes
 OutputDir=out
 OutputBaseFilename=MixCut-Setup-v{#MyAppVersion}-win-x64
 
-; 分卷：单卷 < 90 MB（Gitee Release 单文件 100MB 上限，留余量）
-; 输出会变成 stub setup.exe + 多个 .bin 文件，用户从 Gitee 下全部文件放同目录双击 setup.exe
-; v0.6.1 起回退 hover 到 MediaElement 并清掉 LibVLC（省 ~60MB），lzma2/max 压缩后
-; 整包约 100-130MB，会分成 2-3 个 .bin 分卷
-DiskSpanning=yes
+; v0.11.0 起：完整自包含包（内置 Whisper + 人声分离模型，装完即用永不下载），
+; 通过自建服务器分发、无平台单文件大小限制，故不再分卷 → 单个 setup.exe（对齐 Mac 单 DMG）。
+DiskSpanning=no
 DiskSliceSize=94371840
 SlicesPerDisk=1
 
@@ -65,13 +63,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "其它任务:"; Flags: unchecked
 
 [Files]
-; self-contained publish 全部内容 → {app}
-; 假设构建脚本在跑 iscc 前已经把 publish/ 目录刷新好。
+; 内置模型（大文件，已是压缩过的二进制）：单列并用 nocompression —— 免去 lzma2 对 ~1.7GB
+; 模型做无谓的慢压缩（装包从几十分钟降到几分钟），装到 {app}\bin 供 App 内置优先查找、永不下载。
+Source: "..\publish\bin\ggml-large-v3-turbo.bin"; DestDir: "{app}\bin"; Flags: ignoreversion nocompression
+Source: "..\publish\bin\ggml-htdemucs-4s.bin"; DestDir: "{app}\bin"; Flags: ignoreversion nocompression
+; self-contained publish 其余全部内容 → {app}（排除上面已单列的两个模型，避免重复打入）
 ; recursesubdirs 会递归包含所有子目录：
-;   bin/         FFmpeg / ffprobe / whisper-cli / 6 个 VC Runtime DLL / vcomp140 / concrt140
+;   bin/         FFmpeg / ffprobe / whisper-cli / 6 个 VC Runtime DLL / vcomp140 / concrt140 / 内置模型
 ;   Resources/   AI prompt 模板
 ;   *.dll *.exe  .NET 运行时（self-contained）+ MixCut.exe
-Source: "..\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "bin\ggml-large-v3-turbo.bin,bin\ggml-htdemucs-4s.bin"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

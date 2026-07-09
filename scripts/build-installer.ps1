@@ -1,4 +1,4 @@
-# MixCut Windows 安装包一键构建脚本（v0.4.0+）
+﻿# MixCut Windows 安装包一键构建脚本（v0.4.0+）
 # 在 Windows 构建机执行：powershell -ExecutionPolicy Bypass -File scripts\build-installer.ps1
 #
 # 流程：
@@ -72,6 +72,39 @@ foreach ($f in $RequiredBinFiles) {
     if (-not (Test-Path $p)) { throw "[FATAL] publish/bin/$f 仍缺失" }
 }
 Write-Host "  publish/bin 完整（14 个必备文件全在）"
+
+# ---- Step 3.5: 内置模型（v0.11.0 起完整自包含包，装完即用、永不下载）----
+# 把 Whisper ASR 模型 + 人声分离模型拷进 publish/bin，App 内置优先查找（ASRService.FindModel /
+# VocalSeparationService.EnsureModelAsync 都先看 bin/）。模型体量大，从本机已下好的位置复制。
+Write-Host "[3.5/5] 拷贝内置模型到 publish/bin..."
+$Models = @(
+    @{ Name = 'ggml-large-v3-turbo.bin'; Sub = 'whisper-models'; MinMB = 1500 },
+    @{ Name = 'ggml-htdemucs-4s.bin';    Sub = 'demucs-models';  MinMB = 70 }
+)
+$ModelSearchRoots = @(
+    (Join-Path $env:LOCALAPPDATA 'MixCut'),
+    'D:\新建文件夹\MixCut',
+    (Join-Path $env:APPDATA 'MixCut')
+)
+foreach ($m in $Models) {
+    $dst = Join-Path $BinDir $m.Name
+    if ((Test-Path $dst) -and (((Get-Item $dst).Length / 1MB) -ge $m.MinMB)) {
+        Write-Host "  ✓ $($m.Name) 已在 publish/bin"
+        continue
+    }
+    $found = $null
+    foreach ($root in $ModelSearchRoots) {
+        $cand = Join-Path (Join-Path $root $m.Sub) $m.Name
+        if ((Test-Path $cand) -and (((Get-Item $cand).Length / 1MB) -ge $m.MinMB)) { $found = $cand; break }
+    }
+    if (-not $found) {
+        throw "找不到内置模型 $($m.Name) (需 $($m.MinMB)MB 以上)。请先在 App 里用一次 ASR/配音把模型下下来，或手动放到 数据目录的 $($m.Sub) 子目录"
+    }
+    $szMB = [math]::Round((Get-Item $found).Length / 1MB)
+    Write-Host "  拷贝 $found -> bin ($szMB MB)..."
+    Copy-Item $found -Destination $dst -Force
+}
+Write-Host "  内置模型就位（完整包，装完即用永不下载）"
 
 # ---- Step 4: Inno Setup 编译 ----
 Write-Host "[4/5] Inno Setup 编译..."
