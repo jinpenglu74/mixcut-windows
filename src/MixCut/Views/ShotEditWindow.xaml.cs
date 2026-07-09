@@ -493,8 +493,14 @@ public partial class ShotEditWindow : Window
             sp.Children.Add(new ProgressBar { IsIndeterminate = true, Width = 54, Height = 4, Foreground = Brushes.White });
             sp.Children.Add(new TextBlock
             {
-                Text = "生成中…", Foreground = new SolidColorBrush(Color.FromArgb(0xCC, 0xFF, 0xFF, 0xFF)),
+                Text = "AI 生成中…", Foreground = new SolidColorBrush(Color.FromArgb(0xEE, 0xFF, 0xFF, 0xFF)),
                 FontSize = 10, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 6, 0, 0),
+            });
+            sp.Children.Add(new TextBlock
+            {
+                // 长任务给预期，避免用户以为卡死（§商用丝滑标准 §2）。
+                Text = "约 2~4 分钟", Foreground = new SolidColorBrush(Color.FromArgb(0x99, 0xFF, 0xFF, 0xFF)),
+                FontSize = 9, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 2, 0, 0),
             });
             border = new Border
             {
