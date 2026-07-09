@@ -54,7 +54,14 @@ public sealed partial class VideoGroupViewModel : ObservableObject
     partial void OnVariantCountChanged(int value)
     {
         if (_dubbing is not null) _dubbing.VariantCount = value;
+        OnPropertyChanged(nameof(CanIncVariant));
+        OnPropertyChanged(nameof(CanDecVariant));
     }
+
+    /// <summary>变体数未达上限（5）——「＋」按钮 IsEnabled 绑定，到限即禁用而非静默无响应。</summary>
+    public bool CanIncVariant => VariantCount < 5;
+    /// <summary>变体数未达下限（1）——「−」按钮 IsEnabled 绑定。</summary>
+    public bool CanDecVariant => VariantCount > 1;
 
     /// <summary>本视频是否正在配音处理中（克隆/改写/合成）。</summary>
     [ObservableProperty] private bool _isDubBusy;

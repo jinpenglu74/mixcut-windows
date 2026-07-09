@@ -292,14 +292,16 @@
                                                 IsEnabled="{Binding IsNotDubBusy}">
                                             <StackPanel Orientation="Horizontal">
                                                 <Button Content="−" Style="{StaticResource FrameStepButtonStyle}"
-                                                        ToolTip="减少变体数" Command="{Binding DecVariantCommand}" />
+                                                        ToolTip="减少变体数" Command="{Binding DecVariantCommand}"
+                                                        IsEnabled="{Binding CanDecVariant}" />
                                                 <TextBlock VerticalAlignment="Center" MinWidth="28" TextAlignment="Center"
                                                            FontSize="11" FontWeight="SemiBold"
                                                            Foreground="{StaticResource TextPrimaryBrush}">
                                                     <Run Text="×" /><Run Text="{Binding VariantCount, Mode=OneWay}" />
                                                 </TextBlock>
                                                 <Button Content="+" Style="{StaticResource FrameStepButtonStyle}"
-                                                        ToolTip="增加变体数（每分镜产出几套改写版）" Command="{Binding IncVariantCommand}" />
+                                                        ToolTip="增加变体数（每分镜产出几套改写版）" Command="{Binding IncVariantCommand}"
+                                                        IsEnabled="{Binding CanIncVariant}" />
                                             </StackPanel>
                                         </Border>
                                         <!-- 忙碌进度：阶段文案 + 进度条 + 百分比。

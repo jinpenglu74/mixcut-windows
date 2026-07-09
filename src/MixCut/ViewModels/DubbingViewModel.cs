@@ -132,9 +132,15 @@ public sealed partial class DubbingViewModel : ObservableObject
     public void CancelDub(Guid videoId)
     {
         CancellationTokenSource? cts;
-        lock (_stateLock) { _videoCts.TryGetValue(videoId, out cts); }
+        bool stillBusy;
+        lock (_stateLock)
+        {
+            _videoCts.TryGetValue(videoId, out cts);
+            stillBusy = _busyVideoIds.Contains(videoId);
+        }
         try { cts?.Cancel(); } catch { /* 已释放则忽略 */ }
-        SetProgress(videoId, "正在取消…");
+        // 仅在仍忙时上报，避免在 EndBusy 之后往 _videoProgress 重新塞入已空闲 videoId 的脏进度（泄漏）。
+        if (stillBusy) SetProgress(videoId, "正在取消…");
     }
 
     /// <summary>取本视频配音的取消令牌（无则 None）。配音入口的 external ct 均为 default，故直接用视频 CTS。</summary>
@@ -224,6 +230,7 @@ public sealed partial class DubbingViewModel : ObservableObject
         var progress = new Progress<string>(msg => SetProgress(videoId, "① " + msg));
         // 人声分离的实时百分比（demucs 很慢，必须让用户看到在涨，否则像卡死）。
         var pct = new Progress<double>(f => SetProgressFraction(videoId, f));
+        string? refClip = null;   // finally 兜底删除：Enroll 抛异常/取消也不泄漏参考 mp3
         try
         {
             _logger.LogInformation("[DubDiag] 开始克隆原声 video={Path}", video.LocalPath);
@@ -231,11 +238,10 @@ public sealed partial class DubbingViewModel : ObservableObject
             var stems = await _vocalSep.SeparateAsync(video.LocalPath, hash, progress, pct, ct);
 
             SetProgress(videoId, "① 提取克隆参考…");
-            var refClip = await _vocalSep.ReferenceClipAsync(stems.VocalsPath, 6, ct);
+            refClip = await _vocalSep.ReferenceClipAsync(stems.VocalsPath, 6, ct);
 
             SetProgress(videoId, "② 注册克隆音色…");
             var voiceId = await _cloneService.EnrollAsync(refClip, $"mixcut{hash[..Math.Min(8, hash.Length)]}", ct);
-            TryDeleteTempFile(refClip);   // P1-4：注册用完即删克隆参考 mp3
 
             video.ClonedVoiceId = voiceId;
             await db.SaveChangesAsync(ct);
@@ -266,6 +272,7 @@ public sealed partial class DubbingViewModel : ObservableObject
             ErrorMessage = "原声克隆失败：" + ExceptionTranslator.ToUserMessage(ex);
             return false;
         }
+        finally { TryDeleteTempFile(refClip); }   // P1-4：注册用完即删；失败/取消也不泄漏
     }
 
     /// <summary>
@@ -313,11 +320,11 @@ public sealed partial class DubbingViewModel : ObservableObject
         // 参考取本段音频，≤6s；太短(<1.2s)难克隆 → 回退视频级音色，避免糊出怪音。
         var refDur = Math.Min(6.0, dur);
         if (refDur < 1.2) return fallbackVoiceId; // 段太短，克隆不稳，回退
+        string? refClip = null;   // finally 兜底删除：Enroll 抛异常/取消也不泄漏参考 mp3
         try
         {
-            var refClip = await _vocalSep.SegmentReferenceClipAsync(vocalsPath, start, refDur, ct);
+            refClip = await _vocalSep.SegmentReferenceClipAsync(vocalsPath, start, refDur, ct);
             var voiceId = await _cloneService.EnrollAsync(refClip, namePrefix, ct);
-            TryDeleteTempFile(refClip);   // P1-4：注册用完即删分镜克隆参考 mp3
             await using var db = await _dbFactory.CreateDbContextAsync();
             var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == segmentId, ct);
             if (seg is not null) { seg.ClonedVoiceId = voiceId; await db.SaveChangesAsync(ct); }
@@ -329,6 +336,7 @@ public sealed partial class DubbingViewModel : ObservableObject
             _logger.LogWarning("[DubDiag] 分镜克隆失败 seg={Seg}，回退视频级音色：{Msg}", segmentId, ex.Message);
             return fallbackVoiceId;
         }
+        finally { TryDeleteTempFile(refClip); }
     }
 
     // ---- 一键改写（自动克隆 → 改写 N 套 → 合成配音）----
@@ -698,8 +706,10 @@ public sealed partial class DubbingViewModel : ObservableObject
             videoId = dub?.Segment?.Video?.Id ?? Guid.Empty;
         }
         if (videoId == Guid.Empty) return false;
-        var solo = !IsBusy(videoId);
-        if (solo) BeginBusy(videoId);
+        // BeginBusy 本身在锁内原子（Add 成功才返回 true），用它的返回值作唯一权威——
+        // 消除「先 IsBusy 判空再 BeginBusy」的 check-then-act 竞态（两个并发重生成都读到 not busy
+        // → 都 solo=true → 其一 EndBusy 误 Dispose 掉另一条正在用的 CTS，致 ObjectDisposedException）。
+        var solo = BeginBusy(videoId);
         try
         {
             var err = await GenerateAudioAsync(dubId, ct);
