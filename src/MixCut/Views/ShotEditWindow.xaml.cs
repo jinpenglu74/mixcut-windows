@@ -151,11 +151,22 @@ public partial class ShotEditWindow : Window
         }
         if (_vm.Shots.Count == 0)
         {
-            TrackPanel.Children.Add(new TextBlock
+            var empty = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 80, 4, 0) };
+            empty.Children.Add(new TextBlock
             {
-                Text = "未能切出分镜头（该分镜可能过短或无画面切换）", FontSize = 13,
-                Margin = new Thickness(4, 80, 4, 0), Foreground = Brush("TextSecondaryBrush"),
+                Text = string.IsNullOrEmpty(_vm.ErrorMessage)
+                    ? "未能切出分镜头（该分镜可能过短或无画面切换）" : _vm.ErrorMessage,
+                FontSize = 13, VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("TextSecondaryBrush"),
             });
+            var retry = new Button
+            {
+                Content = "重新切分", FontSize = 12, Margin = new Thickness(12, 0, 0, 0), Padding = new Thickness(10, 4, 10, 4),
+                Cursor = System.Windows.Input.Cursors.Hand, Background = Brush("BgSubtleBrush"),
+                Foreground = Brush("TextSecondaryBrush"), BorderThickness = new Thickness(0),
+            };
+            retry.Click += async (_, _) => { try { await _vm.LoadShotsAsync(_segment); } catch (Exception ex) { ShowError("切分失败：" + ex.Message); } };
+            empty.Children.Add(retry);
+            TrackPanel.Children.Add(empty);
             return;
         }
 
