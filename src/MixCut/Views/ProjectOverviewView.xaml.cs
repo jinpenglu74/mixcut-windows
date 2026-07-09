@@ -207,6 +207,11 @@ public partial class ProjectOverviewView : UserControl, IProjectView
         ExportButton.IsEnabled = project.SchemeCount > 0;
         SchemesButton.Opacity = SchemesButton.IsEnabled ? 1 : 0.5;
         ExportButton.Opacity = ExportButton.IsEnabled ? 1 : 0.5;
+        // 禁用时说明「为什么点不动 + 下一步做什么」，不让用户对着灰按钮困惑。
+        ToolTipService.SetShowOnDisabled(SchemesButton, true);
+        ToolTipService.SetShowOnDisabled(ExportButton, true);
+        SchemesButton.ToolTip = SchemesButton.IsEnabled ? "AI 批量生成混剪方案" : "先导入视频并完成分析，才能生成方案";
+        ExportButton.ToolTip = ExportButton.IsEnabled ? "导出混剪视频" : "先生成混剪方案，才能导出";
     }
 
     private void OnGoImport(object sender, RoutedEventArgs e) => _navigate(NavigationItem.ImportMedia);
