@@ -18,6 +18,7 @@ public partial class ShotEditWindow : Window
     private readonly ShotEditViewModel _vm;
     private readonly Segment _segment;
     private TextBox? _promptBox;
+    private FrameworkElement? _selectedShotCard;   // 当前选中镜头卡（切换后自动滚动到可见）
 
     // 预设提示词模板（PRD §5.3）：分组 → 各条。
     private static readonly (string Group, string[] Items)[] Presets =
@@ -143,6 +144,7 @@ public partial class ShotEditWindow : Window
             return;
         }
 
+        _selectedShotCard = null;
         for (var i = 0; i < _vm.Shots.Count; i++)
         {
             TrackPanel.Children.Add(BuildShotCard(_vm.Shots[i]));
@@ -150,6 +152,12 @@ public partial class ShotEditWindow : Window
             {
                 TrackPanel.Children.Add(BuildBoundaryControl(i));
             }
+        }
+        // 选中的镜头卡滚动到可见（方向键/点击切换后，屏外的选中卡自动露出）。
+        if (_selectedShotCard is not null)
+        {
+            Dispatcher.BeginInvoke(new Action(() => _selectedShotCard?.BringIntoView()),
+                System.Windows.Threading.DispatcherPriority.Loaded);
         }
     }
 
@@ -161,6 +169,7 @@ public partial class ShotEditWindow : Window
         var chosenVariant = _vm.Selections.TryGetValue(shot.OrderIndex, out var vid) ? vid : null;
 
         var stack = new StackPanel { Width = 96, Margin = new Thickness(0) };
+        if (selected) _selectedShotCard = stack;
 
         // 预览（9:16）+ 角标 + 选中描边
         var previewBorder = new Border

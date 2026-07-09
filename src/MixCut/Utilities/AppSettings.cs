@@ -292,6 +292,29 @@ public sealed class AppSettings
         set => Set("last_export_quality", Math.Max(0, value).ToString());
     }
 
+    /// <summary>主窗口上次宽度（记忆用户调整；&lt;960 视为无效回默认）。</summary>
+    public double WindowWidth
+    {
+        get => double.TryParse(Get("window_width"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 960 ? v : 1200;
+        set => Set("window_width", value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>主窗口上次高度（&lt;600 视为无效回默认）。</summary>
+    public double WindowHeight
+    {
+        get => double.TryParse(Get("window_height"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 600 ? v : 760;
+        set => Set("window_height", value.ToString("F0", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>主窗口上次是否最大化。</summary>
+    public bool WindowMaximized
+    {
+        get => Get("window_maximized") == "1";
+        set => Set("window_maximized", value ? "1" : "0");
+    }
+
     /// <summary>上次选中的项目 ID（启动时自动恢复）。对齐 macOS @AppStorage("lastSelectedProjectId")。</summary>
     public Guid? LastSelectedProjectId
     {

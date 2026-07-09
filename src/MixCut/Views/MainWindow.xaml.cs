@@ -79,6 +79,26 @@ public partial class MainWindow : Window
             }
         }
         UpdateContent();
+
+        // 恢复上次窗口尺寸 / 最大化状态（商业软件标配：用户调好的窗口下次还在）。
+        Width = _settings.WindowWidth;
+        Height = _settings.WindowHeight;
+        if (_settings.WindowMaximized) WindowState = WindowState.Maximized;
+    }
+
+    /// <summary>关闭时记忆窗口尺寸 / 最大化状态。最大化时存 RestoreBounds（还原后的尺寸）而非屏幕尺寸。</summary>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        try
+        {
+            var maximized = WindowState == WindowState.Maximized;
+            _settings.WindowMaximized = maximized;
+            var bounds = maximized ? RestoreBounds : new Rect(Left, Top, ActualWidth, ActualHeight);
+            if (bounds.Width >= 960) _settings.WindowWidth = bounds.Width;
+            if (bounds.Height >= 600) _settings.WindowHeight = bounds.Height;
+        }
+        catch { /* 记忆失败不影响关闭 */ }
+        base.OnClosing(e);
     }
 
     private void OnProjectSelected(object sender, SelectionChangedEventArgs e)
