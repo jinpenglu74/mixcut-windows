@@ -366,8 +366,13 @@ public sealed class ShotEditViewModel
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            var friendly = ex is ShotEditException ? ex.Message
-                : "画面替换失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex);
+            // §红线：ffmpeg（抽帧/切片）失败要走 ffmpeg 专用翻译，ApiErrorClassifier 认不出 stderr 会回落原文。
+            var friendly = ex switch
+            {
+                ShotEditException se => se.Message,
+                MixCut.Services.VideoProcessing.FFmpegException => MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex),
+                _ => "画面替换失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex),
+            };
             await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
             var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
             if (v is not null)
@@ -484,7 +489,13 @@ public sealed class ShotEditViewModel
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            ErrorMessage = ex is ShotEditException ? ex.Message : "合成失败：" + ex.Message;
+            // §红线：合成走 ffmpeg，绝不能把 exit code / 英文 stderr 直接拼进 ErrorMessage。
+            ErrorMessage = ex switch
+            {
+                ShotEditException se => se.Message,
+                MixCut.Services.VideoProcessing.FFmpegException => MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex),
+                _ => "合成失败，请重试（若反复失败，素材可能过大或磁盘空间不足）",
+            };
             _logger.LogError(ex, "[ShotEditDiag] 合成失败 seg={Seg}", SegmentId);
             return false;
         }

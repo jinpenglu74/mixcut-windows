@@ -142,16 +142,26 @@ public sealed class WanVideoEditClient
 
     private static string? ParseTaskId(string json)
     {
-        using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.TryGetProperty("output", out var output)
-               && output.TryGetProperty("task_id", out var t)
-            ? t.GetString()
-            : null;
+        // §红线：2xx 但正文非 JSON（网关维护页 / CDN 拦截页）时不能抛裸 JsonException 给用户，
+        // 返回 null 让调用方给「接口未返回任务 id」的人话错误。
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.TryGetProperty("output", out var output)
+                   && output.TryGetProperty("task_id", out var t)
+                ? t.GetString()
+                : null;
+        }
+        catch (JsonException) { return null; }
     }
 
     private static (string? Status, string? VideoUrl, string? FailMsg) ParseTaskStatus(string json)
     {
-        using var doc = JsonDocument.Parse(json);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (JsonException) { return (null, null, null); } // 非 JSON 响应当作抖动，继续轮询
+        using (doc)
+        {
         if (!doc.RootElement.TryGetProperty("output", out var output))
         {
             return (null, null, null);
@@ -162,6 +172,7 @@ public sealed class WanVideoEditClient
                 : output.TryGetProperty("code", out var c) ? c.GetString()
                 : null;
         return (status, videoUrl, msg);
+        }
     }
 
     /// <summary>DashScope 结果 URL 多为 http(OSS)，升 https（V1 预签名不含 scheme，不影响签名）。</summary>

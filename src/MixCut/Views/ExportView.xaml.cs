@@ -373,6 +373,9 @@ public partial class ExportView : UserControl, IProjectView
 
     private async void OnExportAllClick(object sender, RoutedEventArgs e)
     {
+        // 防重入（权威守卫，不只靠按钮 IsEnabled）：正在导出（含被配音组合导出占用）时忽略，
+        // 否则两批导出会共享并互相 Dispose 同一个 _exportCts，令在跑的 ffmpeg 撞 ObjectDisposedException 崩溃。
+        if (_isExporting) return;
         // 用户在异步导出过程中可能切项目 / 改选择，snapshot 一份避免被并发改写。
         var snapshotIds = new HashSet<Guid>(_selectedSchemeIds);
         var schemes = _schemeVM.Schemes.Where(s => snapshotIds.Contains(s.Id)).ToList();
@@ -464,6 +467,7 @@ public partial class ExportView : UserControl, IProjectView
         ProgressSection.Visibility = Visibility.Visible;
         ProgressTitle.Text = $"串行导出（共 {tasks.Count} 个 · 一条一条导）";
         ExportAllButton.IsEnabled = false;
+        ExportDubButton.IsEnabled = false;   // 导出期间禁用配音组合按钮（双保险，与 OnExportDubCombosClick 对称）
 
         // QW-11：每次导出新建取消令牌，「取消」按钮 / ESC 触发后整批 ffmpeg 立即收手。
         _exportCts?.Dispose();
@@ -591,6 +595,7 @@ public partial class ExportView : UserControl, IProjectView
 
     private async void OnExportDubCombosClick(object sender, RoutedEventArgs e)
     {
+        if (_isExporting) return;   // 防重入：与方案导出并发会互相 Dispose _exportCts 致崩（见 OnExportAllClick 注释）
         var snapshotIds = new HashSet<Guid>(_selectedSchemeIds);
         var schemes = _schemeVM.Schemes.Where(s => snapshotIds.Contains(s.Id)).ToList();
         if (schemes.Count == 0) return;
