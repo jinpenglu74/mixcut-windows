@@ -402,6 +402,17 @@ public partial class SchemesView : UserControl, IProjectView
                 },
             };
             sp.Children.Add(hint);
+
+            // 空态直达 CTA：一键打开生成对话框，不用回顶部找「生成」按钮。
+            var cta = new Button
+            {
+                Content = "✨ 立即生成方案", Margin = new Thickness(0, 16, 0, 0), Padding = new Thickness(16, 8, 16, 8),
+                FontSize = 12, FontWeight = FontWeights.SemiBold, Cursor = Cursors.Hand,
+                Background = new SolidColorBrush(Color.FromRgb(0x1D, 0x6B, 0xE5)), Foreground = Brushes.White,
+                BorderThickness = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Center,
+            };
+            cta.Click += OnOpenGenerateDialog;
+            sp.Children.Add(cta);
         }
         return sp;
     }

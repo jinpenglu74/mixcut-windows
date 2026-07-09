@@ -246,6 +246,19 @@ public partial class ShotEditWindow : Window
         };
         var xform = new TranslateTransform();
         handle.RenderTransform = xform;
+        // 拖动中的实时帧数气泡（Popup 浮层，不影响轨道布局）。
+        var deltaText = new TextBlock { Foreground = Brushes.White, FontSize = 11, FontWeight = FontWeights.Bold };
+        var deltaPopup = new System.Windows.Controls.Primitives.Popup
+        {
+            PlacementTarget = handle,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Top,
+            AllowsTransparency = true, StaysOpen = true,
+            Child = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(0xE6, 0x1D, 0x6B, 0xE5)),
+                CornerRadius = new CornerRadius(4), Padding = new Thickness(6, 2, 6, 2), Child = deltaText,
+            },
+        };
         var dragging = false;
         var startX = 0.0;
         handle.MouseLeftButtonDown += (_, e) =>
@@ -254,17 +267,24 @@ public partial class ShotEditWindow : Window
             startX = e.GetPosition(this).X;
             handle.CaptureMouse();
             handle.Background = new SolidColorBrush(Color.FromArgb(0xFF, 0x1D, 0x6B, 0xE5));  // 拖动中高亮
+            deltaText.Text = "0 帧";
+            deltaPopup.IsOpen = true;
             e.Handled = true;
         };
         handle.MouseMove += (_, e) =>
         {
-            if (dragging) xform.X = e.GetPosition(this).X - startX;   // 手柄跟随光标
+            if (!dragging) return;
+            var dx = e.GetPosition(this).X - startX;
+            xform.X = dx;                                   // 手柄跟随光标
+            var df = (int)Math.Round(dx / 2.0);            // 2px≈1帧
+            deltaText.Text = df > 0 ? $"+{df} 帧" : $"{df} 帧";
         };
         handle.MouseLeftButtonUp += async (_, e) =>
         {
             if (!dragging) return;
             dragging = false;
             handle.ReleaseMouseCapture();
+            deltaPopup.IsOpen = false;
             handle.Background = new SolidColorBrush(Color.FromArgb(0x8C, 0x1D, 0x6B, 0xE5));
             var deltaFrames = (int)Math.Round((e.GetPosition(this).X - startX) / 2.0);   // 2px≈1帧
             xform.X = 0;
