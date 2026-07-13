@@ -713,9 +713,13 @@ public partial class App : Application
                 {
                     var bgm = string.IsNullOrEmpty(s.Video?.ContentHash) ? null
                         : System.IO.Path.Combine(AppPaths.StemsDirectory(s.Video!.ContentHash), "bgm.wav");
+                    var stWhole = string.IsNullOrEmpty(dub.RewrittenText) ? s.Text : dub.RewrittenText;
+                    var stCaps = string.IsNullOrEmpty(stWhole)
+                        ? new System.Collections.Generic.List<Models.CaptionLine>()
+                        : new System.Collections.Generic.List<Models.CaptionLine> { new(stWhole, 0, s.Duration) };
                     specs.Add(new Services.Dubbing.DubSegmentSpec(
                         s.Video!.LocalPath, s.StartFrame, s.EndFrame, fps,
-                        string.IsNullOrEmpty(dub.RewrittenText) ? s.Text : dub.RewrittenText,
+                        stCaps,
                         HasHardSubtitle: false, s.MaskStyleRaw, s.MaskRect,
                         IsVoiceLocked: false, dub.AudioFilePath, dub.FreezePadFrames, dub.TrailingSilence,
                         System.IO.File.Exists(bgm) ? bgm : null));
@@ -723,7 +727,8 @@ public partial class App : Application
                 else
                 {
                     specs.Add(new Services.Dubbing.DubSegmentSpec(
-                        s.Video!.LocalPath, s.StartFrame, s.EndFrame, fps, s.Text,
+                        s.Video!.LocalPath, s.StartFrame, s.EndFrame, fps,
+                        System.Array.Empty<Models.CaptionLine>(),
                         false, s.MaskStyleRaw, s.MaskRect, IsVoiceLocked: true, null, 0, 0, null));
                 }
             }
@@ -1000,6 +1005,8 @@ public partial class App : Application
             // #13 配音变体参与排列组合：原版默认参与(1)、改写版默认不参与(0，opt-in)
             AddColumnIfMissing(db, "Segments", "OriginalParticipatesInCombination", "INTEGER NOT NULL DEFAULT 1");
             AddColumnIfMissing(db, "SegmentDubs", "ParticipatesInCombination", "INTEGER NOT NULL DEFAULT 0");
+            // #15 逐句字幕：配音变体的逐句时间行（JSON）；配音生成后 whisper 对齐自动写入
+            AddColumnIfMissing(db, "SegmentDubs", "CaptionLinesJson", "TEXT");
             // #12 分镜头 AI 画面替换：Segment 四个「替换画面」列 + PhysicalShots / ShotVariants 两张新表
             AddColumnIfMissing(db, "Segments", "ReplacedPictureVideoPath", "TEXT");
             AddColumnIfMissing(db, "Segments", "ReplacedPictureThumbnailPath", "TEXT");

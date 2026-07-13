@@ -97,23 +97,29 @@ public sealed class DubExportService
 
         // 输入按追加顺序编号：input 0 = 源视频，extraInputs 依次 input 1..N。
         var extraInputs = new List<string>();
-        (int X, int Y)? captionOrigin = null;
-        var captionInputIndex = 1;
+        var captions = new List<CaptionOverlay>();
         var dubAudioInputIndex = 1;
         int? bgmInputIndex = null;
 
-        var burnText = CaptionRenderer.StripPunctuation(spec.CaptionText);
-        if (!spec.IsVoiceLocked && !string.IsNullOrEmpty(burnText))
+        // #15 逐句字幕：每句一张去标点 PNG，全部先 append（占 input 1..K），dub/bgm 序号随之自动后移。
+        // 每句一个 CaptionOverlay(含 [start,end])，图里链式 overlay=...:enable='between(t,起,止)' 逐句依次出现。锁定段不烧。
+        if (!spec.IsVoiceLocked && spec.CaptionLines.Count > 0)
         {
-            // 画布宽=遮挡区宽（字幕落在遮挡带内换行）；字号=成片宽×全局比例（与 UI 预览同源）。对齐 mac。
+            // 画布宽=遮挡区宽（字幕落在遮挡带内换行，下限 120px 防逐字竖排）；字号=成片宽×全局比例（与 UI 预览同源）。
             var canvasW = Math.Max(120, maskPixel.Width);
             var fontSize = (float)SubtitleFontSize.FontSize(outW, _settings.SubtitleFontRatio);
             var withBackdrop = mode != SubtitleMaskMode.Solid;
-            var pngPath = Path.Combine(workDir, $"cap_{index:D3}.png");
-            var img = CaptionRenderer.RenderToFile(burnText, canvasW, withBackdrop, fontSize, pngPath);
-            captionOrigin = CaptionLayout.OverlayOrigin(outW, outH, spec.MaskRect, img.PixelWidth, img.PixelHeight);
-            extraInputs.Add(pngPath);
-            captionInputIndex = extraInputs.Count; // 1-based
+            for (var li = 0; li < spec.CaptionLines.Count; li++)
+            {
+                var line = spec.CaptionLines[li];
+                var burnText = CaptionRenderer.StripPunctuation(line.Text);
+                if (string.IsNullOrEmpty(burnText)) continue;   // 去标点后为空的句子不出图
+                var pngPath = Path.Combine(workDir, $"cap_{index:D3}_{li:D2}.png");
+                var img = CaptionRenderer.RenderToFile(burnText, canvasW, withBackdrop, fontSize, pngPath);
+                var origin = CaptionLayout.OverlayOrigin(outW, outH, spec.MaskRect, img.PixelWidth, img.PixelHeight);
+                extraInputs.Add(pngPath);
+                captions.Add(new CaptionOverlay(extraInputs.Count, origin.X, origin.Y, line.Start, line.End));
+            }
         }
 
         if (!keepOriginalAudio && spec.DubAudioPath is { } dubPath)
@@ -129,7 +135,7 @@ public sealed class DubExportService
 
         var graph = DubSegmentGraphBuilder.Build(
             mode, spec.StartFrame, spec.EndFrame, spec.Fps, outW, outH, maskPixel,
-            captionOrigin, captionInputIndex, keepOriginalAudio, dubAudioInputIndex,
+            captions, keepOriginalAudio, dubAudioInputIndex,
             spec.FreezePadFrames, spec.TrailingSilence, bgmInputIndex);
 
         var encoder = HardwareEncoderProbe.H264Hardware ?? "libx264";

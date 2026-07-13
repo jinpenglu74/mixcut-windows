@@ -30,6 +30,7 @@ public sealed partial class DubbingViewModel : ObservableObject
     private readonly SegmentReRecognizer _reRecognizer;
     private readonly FFmpegRunner _ffmpeg;
     private readonly AppSettings _settings;
+    private readonly Services.ASR.ASRService _asr;   // 逐句字幕对齐用（对成品配音跑 whisper 测每句时间）
     private readonly ILogger<DubbingViewModel> _logger;
 
     public DubbingViewModel(
@@ -42,6 +43,7 @@ public sealed partial class DubbingViewModel : ObservableObject
         SegmentReRecognizer reRecognizer,
         FFmpegRunner ffmpeg,
         AppSettings settings,
+        Services.ASR.ASRService asr,
         ILogger<DubbingViewModel> logger)
     {
         _dbFactory = dbFactory;
@@ -53,6 +55,7 @@ public sealed partial class DubbingViewModel : ObservableObject
         _reRecognizer = reRecognizer;
         _ffmpeg = ffmpeg;
         _settings = settings;
+        _asr = asr;
         _logger = logger;
     }
 
@@ -883,6 +886,8 @@ public sealed partial class DubbingViewModel : ObservableObject
             dub.GeneratedForTextHash = TextHash(text);
             dub.StatusRaw = nameof(SegmentDubStatus.Generated);
             await db.SaveChangesAsync(ct);
+            // 配音落库后自动逐句对齐（whisper 对成品配音测每句时间；失败静默走比例兜底，不阻断配音成功）
+            await AlignCaptionsAsync(dubId, ct);
             return null;
         }
         catch (Exception ex)
@@ -899,6 +904,65 @@ public sealed partial class DubbingViewModel : ObservableObject
             // P1-4：TTS 原始 wav 只是 finalize 的输入，用完即删，避免每条配音在 %TEMP% 堆一个 wav。
             TryDeleteTempFile(tts?.WavPath);
         }
+    }
+
+    /// <summary>
+    /// 对已生成配音的 dub 做逐句对齐，写回 CaptionLines。失败静默走比例兜底，绝不阻断配音成功。
+    /// ASR 跑成品 m4a（已 atempo，时间=分镜内 0 起）。对齐 macOS DubbingViewModel.alignCaptions。
+    /// 编辑器「重新自动对齐」也调它。
+    /// </summary>
+    public async Task AlignCaptionsAsync(Guid dubId, CancellationToken ct = default)
+    {
+        string audio, text;
+        double segDur, audioDur;
+        await using (var db = await _dbFactory.CreateDbContextAsync())
+        {
+            var dub = await db.SegmentDubs.Include(d => d.Segment).FirstOrDefaultAsync(d => d.Id == dubId, ct);
+            if (dub?.Segment is null) return;
+            if (string.IsNullOrEmpty(dub.AudioFilePath) || !System.IO.File.Exists(dub.AudioFilePath)) return;
+            if (dub.Segment.Duration <= 0 || string.IsNullOrEmpty(dub.RewrittenText)) return;
+            audio = dub.AudioFilePath;
+            text = dub.RewrittenText;
+            segDur = dub.Segment.Duration;
+            audioDur = dub.AudioDuration;
+        }
+
+        var words = new List<Services.Captions.AlignWord>();
+        try
+        {
+            var r = await _asr.TranscribeAsync(audio, cancellationToken: ct);
+            words = r.Words.Select(w => new Services.Captions.AlignWord(w.Word, w.Start, w.End)).ToList();
+            if (r.Duration > 0) audioDur = r.Duration;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation("[Caption] 逐句对齐 ASR 失败，走比例兜底: {Msg}", ex.Message);
+        }
+
+        var lines = Services.Captions.SentenceTimingAligner.Align(text, words, audioDur, segDur);
+        await using (var db2 = await _dbFactory.CreateDbContextAsync())
+        {
+            var dub = await db2.SegmentDubs.FirstOrDefaultAsync(d => d.Id == dubId, ct);
+            if (dub is not null) { dub.CaptionLines = lines; await db2.SaveChangesAsync(ct); }
+        }
+    }
+
+    /// <summary>逐句字幕编辑器：读某变体当前的逐句字幕行（短上下文）。</summary>
+    public async Task<List<CaptionLine>> LoadCaptionLinesAsync(Guid dubId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var dub = await db.SegmentDubs.FirstOrDefaultAsync(d => d.Id == dubId);
+        return dub?.CaptionLines ?? new List<CaptionLine>();
+    }
+
+    /// <summary>逐句字幕编辑器：即时写库（每次调时间/联动分界后调用）。</summary>
+    public async Task SaveCaptionLinesAsync(Guid dubId, List<CaptionLine> lines)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        var dub = await db.SegmentDubs.FirstOrDefaultAsync(d => d.Id == dubId);
+        if (dub is null) return;
+        dub.CaptionLines = lines;
+        await db.SaveChangesAsync();
     }
 
     /// <summary>删除临时文件（best-effort，失败忽略）。</summary>

@@ -1,4 +1,7 @@
+using System;
+using System.Windows;
 using System.Windows.Controls;
+using MixCut.ViewModels;
 
 namespace MixCut.Views;
 
@@ -12,5 +15,29 @@ public partial class DubVariantInspectorView : UserControl
     public DubVariantInspectorView()
     {
         InitializeComponent();
+    }
+
+    /// <summary>#15 打开逐句字幕编辑器（该变体已生成配音时）。</summary>
+    private void OnOpenCaptionEditor(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is not DubVariantItemViewModel item) return;
+        if (string.IsNullOrEmpty(item.AudioFilePath) || !System.IO.File.Exists(item.AudioFilePath))
+        {
+            Components.ToastService.Show("该变体还没有配音音频", Components.ToastStyle.Warning);
+            return;
+        }
+        try
+        {
+            var win = new CaptionTimingEditorWindow(
+                item.DubId, item.TextVariantIndex, item.CaptionSegmentDuration, item.AudioFilePath, item.Dubbing)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            win.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("打开逐句字幕失败：" + ex.Message, Components.ToastStyle.Error);
+        }
     }
 }

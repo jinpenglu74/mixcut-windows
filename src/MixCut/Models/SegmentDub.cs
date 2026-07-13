@@ -62,7 +62,28 @@ public class SegmentDub
     /// <summary><see cref="Status"/> 的底层字符串存储（数据库可读）。</summary>
     public string StatusRaw { get; set; } = nameof(SegmentDubStatus.Pending);
 
+    /// <summary>
+    /// 逐句字幕行 JSON（<see cref="CaptionLine"/> 列表，含每句相对分镜起点的时间窗 + 逐字时间）。
+    /// 配音(重)生成后由 whisper 对齐自动写入；null/空 = 尚未对齐。对应 macOS SegmentDub.captionLinesData。
+    /// </summary>
+    public string? CaptionLinesJson { get; set; }
+
     // ---- 计算属性 ----
+
+    /// <summary>逐句字幕行读写（JSON 存 <see cref="CaptionLinesJson"/>）。导出/编辑器都读它。</summary>
+    [NotMapped]
+    public List<CaptionLine> CaptionLines
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(CaptionLinesJson)) return new List<CaptionLine>();
+            try { return System.Text.Json.JsonSerializer.Deserialize<List<CaptionLine>>(CaptionLinesJson) ?? new(); }
+            catch { return new List<CaptionLine>(); }
+        }
+        set => CaptionLinesJson = (value == null || value.Count == 0)
+            ? null
+            : System.Text.Json.JsonSerializer.Serialize(value);
+    }
 
     /// <summary>生成状态。底层存 <see cref="StatusRaw"/> 字符串。</summary>
     [NotMapped]

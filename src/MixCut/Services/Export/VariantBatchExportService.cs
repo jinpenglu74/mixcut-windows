@@ -69,10 +69,18 @@ public static class VariantExportInput
             if (item.DubId is { } dubId && dubById.TryGetValue(dubId, out var dub)
                 && !string.IsNullOrEmpty(dub.AudioFilePath) && File.Exists(dub.AudioFilePath))
             {
-                var caption = string.IsNullOrEmpty(dub.RewrittenText) ? seg.Text : dub.RewrittenText;
+                // #15 逐句字幕：优先对齐好的 CaptionLines；旧数据无对齐 → 整段一条兜底（防丢字幕）
+                var capLines = dub.CaptionLines;
+                if (capLines.Count == 0)
+                {
+                    var whole = string.IsNullOrEmpty(dub.RewrittenText) ? seg.Text : dub.RewrittenText;
+                    capLines = string.IsNullOrEmpty(whole)
+                        ? new List<Models.CaptionLine>()
+                        : new List<Models.CaptionLine> { new(whole, 0, seg.Duration) };
+                }
                 var spec = new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
-                    caption, seg.HasHardSubtitle, seg.MaskStyleRaw, seg.MaskRect,
+                    capLines, seg.HasHardSubtitle, seg.MaskStyleRaw, seg.MaskRect,
                     IsVoiceLocked: false, DubAudioPath: dub.AudioFilePath,
                     dub.FreezePadFrames, dub.TrailingSilence, BgmPath(video));
                 jobs.Add(new VariantExportJob(true, item.FileName, dur, null, 0, 0, 0, spec, video.Width, video.Height));

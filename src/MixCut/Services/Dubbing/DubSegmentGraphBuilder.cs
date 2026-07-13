@@ -6,6 +6,9 @@ namespace MixCut.Services.Dubbing;
 /// <summary>单分镜中间片的 ffmpeg 滤镜图。对应 mac DubSegmentGraph。</summary>
 public sealed record DubSegmentGraph(string FilterComplex, string VideoMapLabel, string AudioMapLabel);
 
+/// <summary>一条逐句字幕 overlay：PNG 输入序号 + 落位 + 相对分镜起点的时间窗（enable=between 用）。对应 mac CaptionOverlay。</summary>
+public readonly record struct CaptionOverlay(int InputIndex, int X, int Y, double Start, double End);
+
 /// <summary>
 /// 构建「切片 → 9:16 标准化 → 遮挡旧字幕 → 叠新字幕 → 换音轨(克隆配音+BGM混音)」滤镜图。
 /// 对应 mac DubSegmentGraphBuilder。input 0=源视频；字幕 PNG=captionInputIndex；配音 m4a=dubAudioInputIndex；BGM=bgmInputIndex。
@@ -22,8 +25,7 @@ public static class DubSegmentGraphBuilder
         int startFrame, int endFrame, double fps,
         int outputWidth, int outputHeight,
         PixelRect maskPixel,
-        (int X, int Y)? captionOrigin,
-        int captionInputIndex,
+        IReadOnlyList<CaptionOverlay> captions,
         bool keepOriginalAudio,
         int dubAudioInputIndex,
         int freezePadFrames,
@@ -66,17 +68,28 @@ public static class DubSegmentGraphBuilder
                 break;
         }
 
-        // 3) 叠新字幕 PNG → [capped]（锁定段一律不叠）
-        var effectiveCaption = keepOriginalAudio ? null : captionOrigin;
+        // 3) 逐句叠新字幕 PNG → [capped]（每句一个 overlay + enable=between；无字幕透传 [masked]）
+        // 锁定段（保留原声）一律不叠，即使调用方误传了 captions。t=分镜内 0 起（由上面 trim/setpts 保证），
+        // 正好对上 CaptionLine 的相对时间。旧数据/整段兜底：调用方传 1 条 [0,分镜时长] 即等价整段全程。
+        var effectiveCaptions = keepOriginalAudio ? System.Array.Empty<CaptionOverlay>() : captions;
         string videoBeforePad;
-        if (effectiveCaption is { } origin)
+        if (effectiveCaptions.Count == 0)
         {
-            parts.Add($"[masked][{captionInputIndex}:v]overlay={origin.X}:{origin.Y}[capped]");
-            videoBeforePad = "capped";
+            videoBeforePad = "masked";
         }
         else
         {
-            videoBeforePad = "masked";
+            var prev = "masked";
+            for (var ci = 0; ci < effectiveCaptions.Count; ci++)
+            {
+                var c = effectiveCaptions[ci];
+                var outLabel = ci == effectiveCaptions.Count - 1 ? "capped" : $"cap{ci}";
+                parts.Add(
+                    $"[{prev}][{c.InputIndex}:v]overlay={c.X}:{c.Y}:" +
+                    $"enable='between(t,{F3(c.Start)},{F3(c.End)})'[{outLabel}]");
+                prev = outLabel;
+            }
+            videoBeforePad = "capped";
         }
 
         // 4) 末尾定格补帧（freezePad 恒 0，保留逻辑）→ [vout]

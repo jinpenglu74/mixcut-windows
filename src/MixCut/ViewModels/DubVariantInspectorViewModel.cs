@@ -251,6 +251,12 @@ public sealed partial class DubVariantItemViewModel : ObservableObject
     public bool HasAudio => !string.IsNullOrEmpty(_dub.AudioFilePath);
     public bool IsPlaying => _inspector.IsPlaying(_dub.Id);
 
+    // ---- #15 逐句字幕编辑器入口（视图打开窗口用） ----
+    public string? AudioFilePath => _dub.AudioFilePath;
+    /// <summary>该逻辑分镜时长（编辑器 clamp 上限 + 副标题显示）。</summary>
+    public double CaptionSegmentDuration => _targetDuration;
+    internal DubbingViewModel Dubbing => _dubbing;
+
     /// <summary>#13：是否显示「参与组合」勾选框——仅本版已生成音频时（无音频不进组合）。</summary>
     public bool ShowParticipation => HasAudio;
 

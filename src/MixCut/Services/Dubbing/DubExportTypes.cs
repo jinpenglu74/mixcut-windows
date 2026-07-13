@@ -29,9 +29,10 @@ public readonly record struct PixelRect(int X, int Y, int Width, int Height)
 }
 
 /// <summary>单分镜导出规格（值类型）。对应 mac DubSegmentSpec。</summary>
+/// <remarks>#15：<see cref="CaptionLines"/> = 逐句字幕（相对分镜起点秒）；空 = 不烧字幕。</remarks>
 public sealed record DubSegmentSpec(
     string VideoPath, int StartFrame, int EndFrame, double Fps,
-    string CaptionText, bool HasHardSubtitle, string MaskStyleRaw, SubtitleMaskRect MaskRect,
+    IReadOnlyList<CaptionLine> CaptionLines, bool HasHardSubtitle, string MaskStyleRaw, SubtitleMaskRect MaskRect,
     bool IsVoiceLocked, string? DubAudioPath, int FreezePadFrames, double TrailingSilence,
     string? BgmAudioPath);
 
@@ -79,15 +80,23 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
                 // 锁定/无选定 → 保留原声原字幕（不烧新字幕，hasHardSubtitle:false 防遮到要保留的原字幕）
                 specs.Add(new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
-                    segment.Text, false, segment.MaskStyleRaw, segment.MaskRect,
+                    System.Array.Empty<CaptionLine>(), false, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
             }
             else if (!string.IsNullOrEmpty(chosen.AudioFilePath) && File.Exists(chosen.AudioFilePath))
             {
-                var caption = string.IsNullOrEmpty(chosen.RewrittenText) ? segment.Text : chosen.RewrittenText;
+                // #15 逐句字幕：优先用对齐好的 CaptionLines；旧数据无对齐 → 整段一条兜底（等价旧整段烧法，防老数据丢字幕）
+                var capLines = chosen.CaptionLines;
+                if (capLines.Count == 0)
+                {
+                    var whole = string.IsNullOrEmpty(chosen.RewrittenText) ? segment.Text : chosen.RewrittenText;
+                    capLines = string.IsNullOrEmpty(whole)
+                        ? new List<CaptionLine>()
+                        : new List<CaptionLine> { new(whole, 0, segment.Duration) };
+                }
                 specs.Add(new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
-                    caption, segment.HasHardSubtitle, segment.MaskStyleRaw, segment.MaskRect,
+                    capLines, segment.HasHardSubtitle, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: false, DubAudioPath: chosen.AudioFilePath,
                     chosen.FreezePadFrames, chosen.TrailingSilence, BgmPath(video)));
             }
@@ -96,7 +105,7 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
                 // 非锁定但无已生成配音 → 回退原声（不烧新字幕）
                 specs.Add(new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
-                    segment.Text, false, segment.MaskStyleRaw, segment.MaskRect,
+                    System.Array.Empty<CaptionLine>(), false, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
             }
         }
