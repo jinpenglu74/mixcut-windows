@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
 using System.Windows.Threading;
 using MixCut.Models;
 using MixCut.Services.Captions;
@@ -12,11 +14,25 @@ using MixCut.ViewModels;
 namespace MixCut.Views;
 
 /// <summary>
-/// #15 逐句字幕时间编辑器（弹窗，460×560）。文本只读、只调时间；点句播对应配音段；可一键重新自动对齐。
-/// 对应 macOS CaptionTimingEditorSheet。每次改时间即时写库（无需保存）。
+/// #15 逐句字幕时间编辑器（弹窗，480×600）。文本只读、只调时间；点句播对应配音段；可手动拆句 + 一键重新对齐。
+/// 对应 macOS CaptionTimingEditorSheet + Windows 增强（拆分）。每次改动即时写库。
 /// </summary>
 public sealed class CaptionTimingEditorWindow : Window
 {
+    // ---- 配色（与主应用一致的干净浅色）----
+    private static readonly Brush Bg = New(0xF5, 0xF6, 0xF8);
+    private static readonly Brush CardBg = Brushes.White;
+    private static readonly Brush CardBorder = New(0xEA, 0xEA, 0xEE);
+    private static readonly Brush TextPrimary = New(0x1A, 0x1A, 0x1A);
+    private static readonly Brush TextSecondary = New(0x8A, 0x8A, 0x8E);
+    private static readonly Brush Accent = New(0x1D, 0x6B, 0xE5);
+    private static readonly Brush Green = New(0x2E, 0x8B, 0x57);
+    private static readonly Brush Red = New(0xD3, 0x3A, 0x3A);
+    private static readonly Brush StepBg = New(0xF1, 0xF2, 0xF4);
+    private static readonly Brush StepHover = New(0xE4, 0xE6, 0xEA);
+    private static SolidColorBrush New(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+    private static SolidColorBrush Tint(SolidColorBrush b, byte a) => new(Color.FromArgb(a, b.Color.R, b.Color.G, b.Color.B));
+
     private readonly Guid _dubId;
     private readonly int _variantIndex;
     private readonly double _segDuration;
@@ -43,33 +59,37 @@ public sealed class CaptionTimingEditorWindow : Window
         _dubVM = dubVM;
 
         Title = "逐句字幕时间";
-        Width = 460;
-        Height = 560;
+        Width = 480;
+        Height = 600;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.NoResize;
-        Background = new SolidColorBrush(Color.FromRgb(0xF7, 0xF7, 0xF9));
+        Background = Bg;
         UseLayoutRounding = true;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);   // 中文小字清晰
+        TextOptions.SetTextRenderingMode(this, TextRenderingMode.ClearType);
+        FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI");
 
-        try { _player.Open(new Uri(_audioPath)); } catch { /* 首帧就绪前无妨 */ }
+        try { _player.Open(new Uri(_audioPath)); } catch { }
 
         var root = new DockPanel();
-        root.Children.Add(BuildHeader());   // Top
-        root.Children.Add(BuildFooter());   // Bottom（先加，DockPanel 后加的填满）
-        DockPanel.SetDock((UIElement)root.Children[0], Dock.Top);
-        DockPanel.SetDock((UIElement)root.Children[1], Dock.Bottom);
+        var header = BuildHeader();
+        var footer = BuildFooter();
+        DockPanel.SetDock(header, Dock.Top);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        root.Children.Add(header);
+        root.Children.Add(footer);
 
         _emptyText = new TextBlock
         {
-            Text = "还没有逐句字幕数据", FontSize = 13, Foreground = Brushes.Gray,
+            FontSize = 13, Foreground = TextSecondary,
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
         };
         var listHost = new Grid();
-        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(14) };
-        _rows.Margin = new Thickness(0);
+        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(16, 14, 16, 14) };
         scroll.Content = _rows;
         listHost.Children.Add(scroll);
         listHost.Children.Add(_emptyText);
-        root.Children.Add(listHost);        // Fill
+        root.Children.Add(listHost);
         Content = root;
 
         Loaded += async (_, _) =>
@@ -81,127 +101,206 @@ public sealed class CaptionTimingEditorWindow : Window
         Closed += (_, _) => { StopPlayback(); try { _player.Close(); } catch { } };
     }
 
+    // ---- Header ----
     private FrameworkElement BuildHeader()
     {
-        var panel = new DockPanel { Margin = new Thickness(12), LastChildFill = true };
-        var close = new Button { Content = "关闭", Padding = new Thickness(12, 4, 12, 4), Cursor = System.Windows.Input.Cursors.Hand };
-        close.Click += (_, _) => Close();
-        DockPanel.SetDock(close, Dock.Right);
-        panel.Children.Add(close);
+        var grid = new Grid { Margin = new Thickness(18, 16, 16, 14) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-        var titles = new StackPanel();
-        titles.Children.Add(new TextBlock { Text = "逐句字幕时间", FontSize = 15, FontWeight = FontWeights.SemiBold });
+        var icon = new Border
+        {
+            Width = 34, Height = 34, CornerRadius = new CornerRadius(9), Background = Tint((SolidColorBrush)Accent, 0x1F),
+            Child = new TextBlock { Text = "💬", FontSize = 16, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0),
+        };
+        Grid.SetColumn(icon, 0);
+        grid.Children.Add(icon);
+
+        var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        titles.Children.Add(new TextBlock { Text = "逐句字幕时间", FontSize = 16, FontWeight = FontWeights.SemiBold, Foreground = TextPrimary });
         titles.Children.Add(new TextBlock
         {
             Text = $"改写版 {(char)('A' + _variantIndex)} · 分镜时长 {_segDuration:F1}s",
-            FontSize = 11, Foreground = Brushes.Gray, Margin = new Thickness(0, 2, 0, 0),
+            FontSize = 11.5, Foreground = TextSecondary, Margin = new Thickness(0, 2, 0, 0),
         });
-        panel.Children.Add(titles);
-        return new Border { Child = panel, BorderBrush = new SolidColorBrush(Color.FromRgb(0xE3, 0xE3, 0xE6)), BorderThickness = new Thickness(0, 0, 0, 1) };
+        Grid.SetColumn(titles, 1);
+        grid.Children.Add(titles);
+
+        var close = MakeButton("✕", StepBg, TextSecondary, () => Close(), 8, new Thickness(9, 5, 9, 5), 13);
+        Grid.SetColumn(close, 2);
+        grid.Children.Add(close);
+
+        return new Border { Child = grid, Background = CardBg, BorderBrush = CardBorder, BorderThickness = new Thickness(0, 0, 0, 1) };
     }
 
+    // ---- Footer ----
     private FrameworkElement BuildFooter()
     {
-        var panel = new DockPanel { Margin = new Thickness(12), LastChildFill = true };
-        var realign = new Button
-        {
-            Content = "✨ 重新自动对齐", Padding = new Thickness(10, 5, 10, 5), Cursor = System.Windows.Input.Cursors.Hand,
-            ToolTip = "用配音重新识别每句时间，覆盖手动调过的值（文本不变）",
-        };
-        realign.Click += OnRealignClick;
-        DockPanel.SetDock(realign, Dock.Left);
-        panel.Children.Add(realign);
-        panel.Children.Add(new TextBlock
+        var grid = new Grid { Margin = new Thickness(16, 12, 16, 14) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var realign = MakeButton("✨ 重新自动对齐", Accent, Brushes.White, OnRealign, 8, new Thickness(14, 8, 14, 8), 12.5, FontWeights.SemiBold);
+        realign.ToolTip = "用配音重新识别每句时间，覆盖手动调过的值（文本不变）";
+        Grid.SetColumn(realign, 0);
+        grid.Children.Add(realign);
+
+        var hint = new TextBlock
         {
             Text = "字幕文字要改？去改这版台词（会重新配音并重新对齐）",
-            FontSize = 10, Foreground = Brushes.Gray, TextWrapping = TextWrapping.Wrap,
-            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
-        });
-        return new Border { Child = panel, BorderBrush = new SolidColorBrush(Color.FromRgb(0xE3, 0xE3, 0xE6)), BorderThickness = new Thickness(0, 1, 0, 0) };
+            FontSize = 10.5, Foreground = TextSecondary, TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0),
+        };
+        Grid.SetColumn(hint, 1);
+        grid.Children.Add(hint);
+
+        return new Border { Child = grid, Background = CardBg, BorderBrush = CardBorder, BorderThickness = new Thickness(0, 1, 0, 0) };
     }
 
     private void RebuildRows()
     {
-        // 注意：只重绘，不动播放状态（播放的启停由 PlayLine/编辑路径显式管理，否则会把刚开始的播放立刻停掉）。
         _rows.Children.Clear();
-        _emptyText.Text = _busyRealign ? "正在对齐…" : "还没有逐句字幕数据";
+        _emptyText.Text = _busyRealign ? "正在对齐…" : "还没有逐句字幕数据，点下方「重新自动对齐」生成";
         _emptyText.Visibility = _lines.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         for (var i = 0; i < _lines.Count; i++)
-        {
             _rows.Children.Add(BuildRow(i));
-        }
     }
 
+    // ---- 每句卡片 ----
     private FrameworkElement BuildRow(int i)
     {
         var line = _lines[i];
         var playing = _playingIndex == i;
 
-        var grid = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        var grid = new Grid();
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
-        // 播放/停止
-        var playBtn = new Button
+        // 播放圆钮
+        var play = new Border
         {
-            Content = playing ? "■" : "▶",
-            Foreground = playing ? Brushes.Red : new SolidColorBrush(Color.FromRgb(0x2E, 0x8B, 0x57)),
-            FontSize = 16, Width = 30, Height = 30, VerticalAlignment = VerticalAlignment.Top,
-            Background = Brushes.Transparent, BorderThickness = new Thickness(0), Cursor = System.Windows.Input.Cursors.Hand,
-            ToolTip = "试听这句配音", Margin = new Thickness(0, 2, 8, 0),
+            Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Cursor = Cursors.Hand,
+            Background = playing ? Tint((SolidColorBrush)Red, 0x22) : Tint((SolidColorBrush)Green, 0x22),
+            VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 12, 0),
+            Child = new TextBlock
+            {
+                Text = playing ? "■" : "▶", FontSize = 13, Foreground = playing ? Red : Green,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            },
+            ToolTip = "试听这句配音",
         };
-        playBtn.Click += (_, _) => PlayLine(i);
-        Grid.SetColumn(playBtn, 0);
-        grid.Children.Add(playBtn);
+        play.MouseLeftButtonUp += (_, _) => PlayLine(i);
+        Grid.SetColumn(play, 0);
+        grid.Children.Add(play);
 
         var body = new StackPanel();
+
+        // 顶行：序号徽章 + 时长
+        var topRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 6) };
+        topRow.Children.Add(new Border
+        {
+            CornerRadius = new CornerRadius(5), Background = Tint((SolidColorBrush)Accent, 0x18), Padding = new Thickness(6, 1, 6, 1),
+            Child = new TextBlock { Text = $"第 {i + 1} 句", FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = Accent },
+        });
+        topRow.Children.Add(new TextBlock
+        {
+            Text = $"{Math.Max(0, line.End - line.Start):F1}s", FontSize = 10.5, Foreground = TextSecondary,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0),
+        });
+        body.Children.Add(topRow);
+
+        // 文本
         body.Children.Add(new TextBlock
         {
             Text = string.IsNullOrEmpty(line.Text) ? "（空）" : line.Text,
-            FontSize = 13, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 6),
+            FontSize = 13.5, LineHeight = 21, Foreground = TextPrimary, TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
         });
-        var steppers = new StackPanel { Orientation = Orientation.Horizontal };
-        steppers.Children.Add(BuildStepper("起", line.Start, v => SetStart(i, v)));
-        steppers.Children.Add(new Border { Width = 12 });
-        steppers.Children.Add(BuildStepper("止", line.End, v => SetEnd(i, v)));
-        body.Children.Add(steppers);
+
+        // 时间步进 + 拆分
+        var controls = new StackPanel { Orientation = Orientation.Horizontal };
+        controls.Children.Add(BuildStepper("起", line.Start, v => SetStart(i, v)));
+        controls.Children.Add(new Border { Width = 10 });
+        controls.Children.Add(BuildStepper("止", line.End, v => SetEnd(i, v)));
+        controls.Children.Add(new Border { Width = 10 });
+        var split = MakeButton("✂ 拆分", StepBg, TextSecondary, () => SplitAt(i), 7, new Thickness(9, 4, 9, 4), 11);
+        split.VerticalAlignment = VerticalAlignment.Center;
+        split.ToolTip = "把这句从中间拆成两句（可反复拆，再各自调时间）";
+        controls.Children.Add(split);
+        body.Children.Add(controls);
+
         Grid.SetColumn(body, 1);
         grid.Children.Add(body);
 
         return new Border
         {
-            Child = grid, Padding = new Thickness(10), Margin = new Thickness(0),
-            CornerRadius = new CornerRadius(8),
-            Background = new SolidColorBrush(Color.FromArgb((byte)(playing ? 0xF2 : 0xFF), 0xFF, 0xFF, 0xFF)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xE3, 0xE3, 0xE6)), BorderThickness = new Thickness(1),
+            Child = grid, Padding = new Thickness(14, 12, 14, 12), Margin = new Thickness(0, 0, 0, 10),
+            CornerRadius = new CornerRadius(10), Background = CardBg,
+            BorderBrush = playing ? Tint((SolidColorBrush)Accent, 0x66) : CardBorder,
+            BorderThickness = new Thickness(playing ? 1.5 : 1),
+            Effect = new DropShadowEffect { Color = Colors.Black, BlurRadius = 8, ShadowDepth = 1, Opacity = 0.05, Direction = 270 },
         };
     }
 
     private FrameworkElement BuildStepper(string label, double value, Action<double> set)
     {
         var sp = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        sp.Children.Add(new TextBlock { Text = label, FontSize = 11, Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
-        var minus = new Button { Content = "−", Width = 22, Height = 22, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(0) };
-        minus.Click += (_, _) => set(value - Step);
-        sp.Children.Add(minus);
-        sp.Children.Add(new TextBlock
+        sp.Children.Add(new TextBlock { Text = label, FontSize = 11, Foreground = TextSecondary, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0) });
+
+        var pill = new Border
         {
-            Text = $"{value:F1}s", FontFamily = new FontFamily("Consolas"), FontSize = 12,
-            Width = 44, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            CornerRadius = new CornerRadius(7), Background = StepBg, Padding = new Thickness(2),
+            Child = null,
+        };
+        var inner = new StackPanel { Orientation = Orientation.Horizontal };
+        inner.Children.Add(StepGlyph("−", () => set(value - Step)));
+        inner.Children.Add(new TextBlock
+        {
+            Text = $"{value:F1}s", FontFamily = new FontFamily("Consolas"), FontSize = 12.5, Foreground = TextPrimary,
+            Width = 42, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
         });
-        var plus = new Button { Content = "＋", Width = 22, Height = 22, Cursor = System.Windows.Input.Cursors.Hand, Padding = new Thickness(0) };
-        plus.Click += (_, _) => set(value + Step);
-        sp.Children.Add(plus);
+        inner.Children.Add(StepGlyph("＋", () => set(value + Step)));
+        pill.Child = inner;
+        sp.Children.Add(pill);
         return sp;
     }
 
-    // ---- 编辑（即时写库，带约束）----
+    private FrameworkElement StepGlyph(string glyph, Action onClick)
+    {
+        var b = new Border
+        {
+            Width = 24, Height = 24, CornerRadius = new CornerRadius(6), Background = Brushes.White, Cursor = Cursors.Hand,
+            Child = new TextBlock { Text = glyph, FontSize = 13, Foreground = Accent, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
+        };
+        b.MouseEnter += (_, _) => b.Background = New(0xEC, 0xF1, 0xFB);
+        b.MouseLeave += (_, _) => b.Background = Brushes.White;
+        b.MouseLeftButtonUp += (_, _) => onClick();
+        return b;
+    }
+
+    /// <summary>可点击的圆角「按钮」（Border 实现，带 hover）。</summary>
+    private Border MakeButton(string content, Brush bg, Brush fg, Action onClick, double radius, Thickness pad, double fontSize, FontWeight? weight = null)
+    {
+        var b = new Border
+        {
+            CornerRadius = new CornerRadius(radius), Background = bg, Padding = pad, Cursor = Cursors.Hand,
+            Child = new TextBlock { Text = content, FontSize = fontSize, Foreground = fg, FontWeight = weight ?? FontWeights.Normal, HorizontalAlignment = HorizontalAlignment.Center },
+            VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        b.MouseEnter += (_, _) => b.Opacity = 0.88;
+        b.MouseLeave += (_, _) => b.Opacity = 1.0;
+        b.MouseLeftButtonUp += (_, _) => onClick();
+        return b;
+    }
+
+    // ---- 编辑（即时写库）----
     // 「起」= 与上一句的分界；「止」= 与下一句的分界。动分界 → 字按时间在相邻句间迁移/合并（联动）。
 
     private void SetStart(int i, double v)
     {
         if (i > 0) { MoveBoundary(i - 1, v); return; }
-        // 首句起：只 clamp 自己 [0, 止-gap]
         StopPlayback();
         _lines[0].Start = Math.Min(Math.Max(0, v), _lines[0].End - MinGap);
         Persist(); RebuildRows();
@@ -210,7 +309,6 @@ public sealed class CaptionTimingEditorWindow : Window
     private void SetEnd(int i, double v)
     {
         if (i + 1 < _lines.Count) { MoveBoundary(i, v); return; }
-        // 末句止：只 clamp 自己 [起+gap, 分镜时长]
         StopPlayback();
         _lines[i].End = Math.Min(Math.Max(_lines[i].Start + MinGap, v), _segDuration);
         Persist(); RebuildRows();
@@ -219,7 +317,16 @@ public sealed class CaptionTimingEditorWindow : Window
     private void MoveBoundary(int i, double t)
     {
         var next = CaptionBoundaryEditor.MoveBoundary(_lines, i, t, MinGap);
-        if (next.Count == _lines.Count && next.SequenceEqual(_lines)) return; // noop
+        if (next.Count == _lines.Count && next.SequenceEqual(_lines)) return;
+        StopPlayback();
+        _lines = next;
+        Persist(); RebuildRows();
+    }
+
+    private void SplitAt(int i)
+    {
+        var next = CaptionBoundaryEditor.SplitLine(_lines, i);
+        if (next.Count == _lines.Count) return; // 单字不可拆
         StopPlayback();
         _lines = next;
         Persist(); RebuildRows();
@@ -227,7 +334,7 @@ public sealed class CaptionTimingEditorWindow : Window
 
     private void Persist() => _ = _dubVM.SaveCaptionLinesAsync(_dubId, _lines);
 
-    private async void OnRealignClick(object sender, RoutedEventArgs e)
+    private async void OnRealign()
     {
         if (_busyRealign) return;
         var ok = MessageBox.Show(
@@ -243,26 +350,18 @@ public sealed class CaptionTimingEditorWindow : Window
             await _dubVM.AlignCaptionsAsync(_dubId);
             _lines = await _dubVM.LoadCaptionLinesAsync(_dubId);
         }
-        catch { /* 失败保持空，比例兜底已在 AlignCaptions 内 */ }
-        finally
-        {
-            _busyRealign = false;
-            RebuildRows();
-        }
+        catch { }
+        finally { _busyRealign = false; RebuildRows(); }
     }
 
-    // ---- 播放某句音频段（纯音频段，播到「止」自动停）----
-
+    // ---- 播放某句音频段（播到「止」自动停）----
     private void PlayLine(int i)
     {
+        var wasPlaying = _playingIndex == i;
         StopPlayback();
-        if (_playingIndex == i) { _playingIndex = null; RebuildRows(); return; }
+        if (wasPlaying) { RebuildRows(); return; }
         var line = _lines[i];
-        try
-        {
-            _player.Position = TimeSpan.FromSeconds(Math.Max(0, line.Start));
-            _player.Play();
-        }
+        try { _player.Position = TimeSpan.FromSeconds(Math.Max(0, line.Start)); _player.Play(); }
         catch { return; }
         _playingIndex = i;
         var dur = Math.Max(0.1, line.End - line.Start);

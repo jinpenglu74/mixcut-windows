@@ -22,6 +22,26 @@ public static class CaptionBoundaryEditor
         return cs.Select((c, k) => new TimedChar(c.ToString(), line.Start + span * (k + 1) / cs.Length)).ToList();
     }
 
+    /// <summary>
+    /// 把第 i 句在「逐字时间中点」拆成两句（Windows 增强：用户手动分句）。字总量守恒、顺序不变，
+    /// 拆点 = 前半末字的结束时间。单字句（&lt;2 字）不可拆，原样返回。可反复拆得任意粒度。
+    /// </summary>
+    public static List<CaptionLine> SplitLine(List<CaptionLine> lines, int i)
+    {
+        if (i < 0 || i >= lines.Count) return lines;
+        var chars = CharsOf(lines[i]);
+        if (chars.Count < 2) return lines;          // 单字不可拆
+        var mid = chars.Count / 2;
+        var leftChars = chars.Take(mid).ToList();
+        var rightChars = chars.Skip(mid).ToList();
+        var boundary = leftChars[^1].End;
+        var outLines = lines.Select(l => l.Clone()).ToList();
+        var orig = outLines[i];
+        outLines[i] = new CaptionLine(string.Concat(leftChars.Select(c => c.Ch)), orig.Start, boundary, leftChars);
+        outLines.Insert(i + 1, new CaptionLine(string.Concat(rightChars.Select(c => c.Ch)), boundary, orig.End, rightChars));
+        return outLines;
+    }
+
     /// <summary>移动第 i 句与第 i+1 句之间的分界到时间 t，返回新分区（字总量不变、顺序不变）。</summary>
     public static List<CaptionLine> MoveBoundary(List<CaptionLine> lines, int afterIndex, double t, double minGap = 0.05)
     {

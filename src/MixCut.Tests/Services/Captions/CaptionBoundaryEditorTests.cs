@@ -68,6 +68,27 @@ public class CaptionBoundaryEditorTests
     }
 
     [Fact]
+    public void SplitLineAtMidpoint()
+    {
+        // 拆第 0 句「你好」(你0.5/好1.0) → 中点1：左「你」[0,0.5]、右「好」[0.5,1.0]，原第2句后移
+        var outLines = CaptionBoundaryEditor.SplitLine(TwoLines(), 0);
+        Assert.Equal(3, outLines.Count);
+        Assert.Equal("你", outLines[0].Text);
+        Assert.True(System.Math.Abs(outLines[0].End - 0.5) < 0.001);
+        Assert.Equal("好", outLines[1].Text);
+        Assert.True(System.Math.Abs(outLines[1].Start - 0.5) < 0.001);
+        Assert.True(System.Math.Abs(outLines[1].End - 1.0) < 0.001);
+        Assert.Equal("世界", outLines[2].Text);
+    }
+
+    [Fact]
+    public void SplitSingleCharNoop()
+    {
+        var lines = new List<CaptionLine> { new CaptionLine("你", 0, 1, new List<TimedChar> { new("你", 1.0) }) };
+        Assert.True(CaptionBoundaryEditor.SplitLine(lines, 0).SequenceEqual(lines)); // 单字不可拆
+    }
+
+    [Fact]
     public void LegacyNoChars()
     {
         var lines = new List<CaptionLine>
