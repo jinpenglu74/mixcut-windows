@@ -82,7 +82,12 @@ public partial class ProjectOverviewView : UserControl, IProjectView
             _cardsProjectId = project.Id;
         }
 
-        var videos = project.Videos.ToList();
+        // 按 Id 去重：同一视频可能被重复关联（ProjectVideos 有多条指向同一 Video 的行），
+        // 去重后「卡片数 == videos.Count」，否则下面重排 Insert 会越界崩溃（v0.11.0 增量优化引入的回归）。
+        var videos = project.Videos
+            .GroupBy(v => v.Id)
+            .Select(g => g.First())
+            .ToList();
         var wantIds = new HashSet<Guid>(videos.Select(v => v.Id));
 
         // 1) 移除已不存在的视频卡。
@@ -113,14 +118,15 @@ public partial class ProjectOverviewView : UserControl, IProjectView
         }
 
         // 3) 保证卡片顺序与 project.Videos 一致（新增可能落在末尾）。
+        // 防御：卡片可能不在容器里 / 索引夹紧，任何情况都不越界（对齐 §不破坏已有功能）。
         for (var i = 0; i < videos.Count; i++)
         {
-            var border = _videoCards[videos[i].Id].Border;
-            if (VideoGrid.Children.IndexOf(border) != i)
-            {
-                VideoGrid.Children.Remove(border);
-                VideoGrid.Children.Insert(i, border);
-            }
+            if (!_videoCards.TryGetValue(videos[i].Id, out var holder)) continue;
+            var border = holder.Border;
+            var cur = VideoGrid.Children.IndexOf(border);
+            if (cur < 0 || cur == i) continue;
+            VideoGrid.Children.Remove(border);
+            VideoGrid.Children.Insert(Math.Min(i, VideoGrid.Children.Count), border);
         }
     }
 
