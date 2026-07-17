@@ -577,6 +577,18 @@
                                                 <TextBlock Text="{Binding PictureToggleLabel}" Foreground="White" FontSize="10" FontWeight="SemiBold" />
                                             </StackPanel>
                                         </Border>
+
+                                        <!-- #17/#18：处理中占位遮罩（识别中 / 打标中 / 重新识别），盖最上层挡住播放/交互 -->
+                                        <Border Background="#B0000000" CornerRadius="6"
+                                                Visibility="{Binding IsProcessing, Converter={StaticResource BoolToVisibility}}">
+                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <ProgressBar IsIndeterminate="True" Width="64" Height="4"
+                                                             Foreground="White" Background="#40FFFFFF" BorderThickness="0" />
+                                                <TextBlock Text="{Binding ProcessingText}" Foreground="White"
+                                                           FontSize="11" FontWeight="SemiBold" Margin="0,8,0,0"
+                                                           HorizontalAlignment="Center" TextAlignment="Center" />
+                                            </StackPanel>
+                                        </Border>
                                     </Grid>
                                 </Border>
 

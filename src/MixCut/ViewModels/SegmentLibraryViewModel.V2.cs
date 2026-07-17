@@ -45,6 +45,21 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     /// <summary>#17：自建分镜（IsUserUploaded 载体视频）聚成一个置顶组；其余按视频分组。</summary>
     private sealed record GroupSpec(Video Video, List<Segment> Segs, bool IsUserGroup);
 
+    /// <summary>#17/#18：处理中的分镜（segId → 阶段文案），驱动卡片 loading 占位遮罩。</summary>
+    private readonly Dictionary<Guid, string> _processingSegments = new();
+
+    /// <summary>标记/清除某分镜的处理中状态（stage=null 清除），并即时刷新对应卡片的 loading 遮罩。</summary>
+    public void SetProcessing(Guid segmentId, string? stage)
+    {
+        if (string.IsNullOrEmpty(stage)) _processingSegments.Remove(segmentId);
+        else _processingSegments[segmentId] = stage;
+        if (_cardIndex.TryGetValue(segmentId, out var card))
+        {
+            card.IsProcessing = !string.IsNullOrEmpty(stage);
+            card.ProcessingText = stage ?? string.Empty;
+        }
+    }
+
     /// <summary>把筛选后的分镜切成「自建分镜置顶组 + 各视频普通组」的规格列表。</summary>
     private List<GroupSpec> BuildGroupSpecs(List<Segment> filtered)
     {
@@ -89,11 +104,15 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
             }
             else
             {
-                card.RefreshFromSegment();
+                card.RefreshFromSegment(seg);   // 同步为最新查到的 Segment（台词/标签/边界随之刷新）
             }
             card.IsSelectionMode = IsSelectionMode;
             card.IsChecked = SelectedSegmentIds.Contains(seg.Id);
             card.SequenceNumber = NumberFor(seg);
+            // #17/#18：重建卡片时恢复处理中状态（占位卡在刷新后仍显示 loading）。
+            var isProc = _processingSegments.TryGetValue(seg.Id, out var stage);
+            card.IsProcessing = isProc;
+            card.ProcessingText = stage ?? string.Empty;
             cards.Add(card);
         }
         return cards;
@@ -396,7 +415,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     /// A 复用原记录=[start,cut)，B 新建=[cut,end) 继承标签；原分镜配音/逐句字幕/画面替换全部清空（不可恢复）；
     /// A、B 各自重抽首帧 + 各自阿里 paraformer 重识别台词。已被方案引用的分镜禁止拆分（双保险）。
     /// </summary>
-    public async Task<(bool Ok, string? Error)> SplitSegmentAsync(Guid segmentId, int cutFrame, CancellationToken ct = default)
+    public async Task<(bool Ok, string? Error, Guid AId, Guid BId)> SplitSegmentAsync(Guid segmentId, int cutFrame, CancellationToken ct = default)
     {
         string? videoPath = null;
         var aId = segmentId;
@@ -405,11 +424,11 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
-            var a = await db.Segments.Include(s => s.SchemeSegments)
+            var a = await db.Segments.Include(s => s.SchemeSegments).Include(s => s.Video)
                 .FirstOrDefaultAsync(s => s.Id == segmentId, ct);
-            if (a is null) return (false, "分镜不存在");
+            if (a is null) return (false, "分镜不存在", Guid.Empty, Guid.Empty);
             if (a.SchemeSegments.Count > 0)
-                return (false, $"该分镜已被 {a.SchemeSegments.Count} 个方案使用，请先在方案里移除对它的使用再拆分");
+                return (false, $"该分镜已被 {a.SchemeSegments.Count} 个方案使用，请先在方案里移除对它的使用再拆分", Guid.Empty, Guid.Empty);
 
             var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == a.VideoId, ct);
             videoPath = video?.LocalPath;
@@ -417,7 +436,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
             var startFrame = a.StartFrame;
             var endFrame = a.EndFrame;
             if (cutFrame <= startFrame || cutFrame >= endFrame)
-                return (false, "拆分点无效（需落在分镜内部）");
+                return (false, "拆分点无效（需落在分镜内部）", Guid.Empty, Guid.Empty);
 
             // B 新建，继承 A 的语义标签（B 天然无衍生物）。
             var b = new Segment
@@ -439,10 +458,19 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
             var shots = await db.PhysicalShots.Where(p => p.SegmentId == a.Id).ToListAsync(ct);
             if (shots.Count > 0) db.PhysicalShots.RemoveRange(shots);            // 级联删 ShotVariants
             a.InvalidateReplacedPicture();                                       // 清替换画面
-            a.ClonedVoiceId = null;
+            a.ClonedVoiceId = null;                                             // 清该分镜单独克隆的音色
             a.IsVoiceLocked = false;
             a.HasHardSubtitle = false;
             a.MaskRectJson = null;
+
+            // 从原视频 ASR 字级时间戳按新边界提取 A/B 台词（本地瞬时、无需网络/重识别，无 key 依赖）。
+            // 比阿里 paraformer 重识别更优：原视频已有字级时间戳，直接按新窗口取，准确且不产生网络请求。
+            if (a.Video is not null)
+            {
+                var aText = ExtractTextFromAsrWords(a.Video, a.StartTime, a.EndTime);
+                if (aText.Length > 0) a.Text = aText;
+                b.Text = ExtractTextFromAsrWords(a.Video, b.StartTime, b.EndTime);
+            }
 
             db.Segments.Add(b);
             await db.SaveChangesAsync(ct);
@@ -455,14 +483,17 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
             await RethumbSplitAsync(bId, videoPath!, fps, ct);
         }
 
-        // A、B 各自阿里 paraformer 重识别台词（按新边界；失败该段 text 留空、不回滚拆分）。
-        try { await _dubbing.ReRecognizeSegmentAsync(aId, ct); }
-        catch (Exception ex) { _logger.LogWarning(ex, "[SplitDiag] A 段重识别失败（text 留空）"); }
-        try { await _dubbing.ReRecognizeSegmentAsync(bId, ct); }
-        catch (Exception ex) { _logger.LogWarning(ex, "[SplitDiag] B 段重识别失败（text 留空）"); }
+        _logger.LogInformation("[SplitDiag] 结构拆分完成 A={A} B={B} cut={Cut}（台词重识别由调用方后台编排）", aId, bId, cutFrame);
+        return (true, null, aId, bId);
+    }
 
-        _logger.LogInformation("[SplitDiag] 拆分完成 A={A} B={B} cut={Cut}", aId, bId, cutFrame);
-        return (true, null);
+    /// <summary>#18：从原视频 ASR 字级时间戳按时间窗提取台词（中心点落在 [start,end) 内的词拼接）。本地、无网络。</summary>
+    private static string ExtractTextFromAsrWords(Models.Video video, double startSec, double endSec)
+    {
+        var matched = video.AsrWords
+            .Where(w => (w.Start + w.End) / 2 >= startSec && (w.Start + w.End) / 2 < endSec)
+            .Select(w => w.Word);
+        return string.Concat(matched).Trim();
     }
 
     /// <summary>拆分后按新 StartFrame 重抽首帧缩略图并写回 ThumbnailPath（文件名带帧号保证路径唯一→触发刷新）。</summary>

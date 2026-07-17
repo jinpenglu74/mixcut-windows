@@ -69,9 +69,21 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
     }
 
+    /// <summary>重载 + 重建分组 + 刷新统计（绕过 LoadProject 的「同项目 return」守卫）。上传/拆分后复用。</summary>
+    private void RefreshSegmentLibrary()
+    {
+        if (_currentProject is null) return;
+        _vm.LoadSegments(_currentProject);
+        _vm.RebuildGroups();
+        BuildTypeChips();
+        UpdateStats();
+        UpdateEmptyState();
+    }
+
     /// <summary>
-    /// #17：上传自建分镜 —— 多选 mp4/mov（单条 ≤15s），逐个走「落盘→ASR→只打标」流水线，
-    /// 就绪后出现在分镜库置顶的「自建分镜」组。async void 事件处理器：全 body try/catch，异常不逃逸。
+    /// #17：上传自建分镜 —— 多选 mp4/mov（单条 ≤15s）。占位卡先出现并显示 loading（识别中→打标中），
+    /// 处理完就地变就绪卡（对齐 §商用丝滑标准 §1 进度反馈：不让用户对着不动的界面干等）。
+    /// async void 事件处理器：全 body try/catch，异常不逃逸。
     /// </summary>
     private async void OnUploadUserSegment(object sender, RoutedEventArgs e)
     {
@@ -91,31 +103,35 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
             var service = _services.GetRequiredService<Services.UserSegments.UserSegmentImportService>();
 
             UploadUserSegmentButton.IsEnabled = false;
+            Serilog.Log.Information("[UserSegUpload] 开始上传 {N} 个文件", files.Length);
             var okCount = 0;
             var skipped = new List<string>();
             for (var i = 0; i < files.Length; i++)
             {
                 var fileName = System.IO.Path.GetFileName(files[i]);
-                Components.ToastService.Show(
-                    $"处理自建分镜 {i + 1}/{files.Length}：{fileName} …", Components.ToastStyle.Info);
-                var r = await service.ImportOneAsync(files[i], projectId);
-                if (r.Status == Services.UserSegments.UserSegmentImportStatus.Success)
-                {
-                    okCount++;
-                }
-                else
-                {
-                    skipped.Add($"{fileName}：{r.Message}");
-                }
+                var placeholderId = Guid.Empty;
+                var r = await service.ImportOneAsync(files[i], projectId,
+                    // 占位落库 → 立即显示 loading 占位卡。
+                    onSegmentCreated: segId => Dispatcher.Invoke(() =>
+                    {
+                        placeholderId = segId;
+                        _vm.SetProcessing(segId, "识别中…");
+                        RefreshSegmentLibrary();
+                    }),
+                    // 阶段推进 → 更新占位卡文案（"识别中"→"打标中"）。
+                    onStage: stage => Dispatcher.Invoke(() =>
+                    {
+                        if (placeholderId != Guid.Empty)
+                            _vm.SetProcessing(placeholderId, stage.EndsWith("…") ? stage : stage + "…");
+                    }));
+
+                // 该文件完成：清占位 loading，刷新为就绪卡（台词/标签就位）。
+                if (placeholderId != Guid.Empty) _vm.SetProcessing(placeholderId, null);
+                if (r.Status == Services.UserSegments.UserSegmentImportStatus.Success) okCount++;
+                else skipped.Add($"{fileName}：{r.Message}");
+                RefreshSegmentLibrary();
             }
 
-            // 刷新分镜库（绕过 LoadProject 的「同项目 return」守卫，直接重载 + 重建分组）。
-            var proj = _currentProject;
-            _vm.LoadSegments(proj);
-            _vm.RebuildGroups();
-            BuildTypeChips();
-            UpdateStats();
-            UpdateEmptyState();
             // §F：广播失效 Overview/Schemes 等缓存（自建分镜计入分镜数）。
             _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
 
@@ -130,6 +146,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
         catch (Exception ex)
         {
+            Serilog.Log.Error(ex, "[UserSegUpload] 上传处理异常");
             Components.ToastService.Show("上传自建分镜失败：" + ex.Message, Components.ToastStyle.Error);
         }
         finally
@@ -153,28 +170,21 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
                 return;
             }
 
-            var ffmpeg = _services.GetRequiredService<Services.VideoProcessing.FFmpegRunner>();
-            var win = new SplitSegmentWindow(segment, ffmpeg) { Owner = Window.GetWindow(this) };
+            var win = new SplitSegmentWindow(segment) { Owner = Window.GetWindow(this) };
             if (win.ShowDialog() != true) return;
 
-            Components.ToastService.Show("正在拆分并重新识别台词 …", Components.ToastStyle.Info);
-            var (ok, error) = await _vm.SplitSegmentAsync(segment.Id, win.CutFrame);
+            Components.ToastService.Show("正在拆分 …", Components.ToastStyle.Info);
+            var (ok, error, aId, bId) = await _vm.SplitSegmentAsync(segment.Id, win.CutFrame);
             if (!ok)
             {
                 Components.ToastService.Show(error ?? "拆分失败", Components.ToastStyle.Warning);
                 return;
             }
 
-            // 刷新分镜库 + 广播失效缓存（§F）。
-            if (_currentProject is not null)
-            {
-                _vm.LoadSegments(_currentProject);
-                _vm.RebuildGroups();
-                BuildTypeChips();
-                UpdateStats();
-                UpdateEmptyState();
-                _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
-            }
+            // 台词已在 SplitSegmentAsync 内从原视频 ASR 字级时间戳本地提取好（无网络、无需 key），
+            // 缩略图也已按新边界重抽 → 直接刷新即两段就位。
+            RefreshSegmentLibrary();
+            _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
             Components.ToastService.Show("已拆分为两段分镜", Components.ToastStyle.Success);
         }
         catch (Exception ex)

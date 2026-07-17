@@ -22,7 +22,7 @@ namespace MixCut.ViewModels.Cards;
 /// </summary>
 public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
 {
-    private readonly Segment _segment;
+    private Segment _segment;   // 非 readonly：RebuildGroups 复用卡片时会同步为最新查到的 Segment（见 RefreshFromSegment）
     private readonly ISegmentCardHost _host;
 
     public SegmentCardViewModel(Segment segment, ISegmentCardHost host)
@@ -94,6 +94,15 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PreviewImage))]
     private System.Windows.Media.ImageSource? _scrubImage;
+
+    /// <summary>
+    /// #17/#18：卡片是否处理中（自建分镜上传的 ASR/打标、拆分后的重识别），显示 loading 占位遮罩。
+    /// 由 host（SegmentLibraryViewModel.SetProcessing）驱动，处理完清除。
+    /// </summary>
+    [ObservableProperty] private bool _isProcessing;
+
+    /// <summary>处理中的阶段文案（如「识别中…」「打标中…」「重新识别…」）。</summary>
+    [ObservableProperty] private string _processingText = string.Empty;
 
     /// <summary>ThumbnailCache 通知某张图加载完成时调用，若路径匹配则刷新 binding。</summary>
     private void OnThumbnailLoaded(string loadedPath)
@@ -504,8 +513,11 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     /// 父 VM 改动 segment 字段（StartTime/EndTime/Text 等）后调用，把 segment 同步到 CardVM 的 ObservableProperty
     /// 触发 binding 刷新。host 在 AdjustStartTime/SetStartTime 末尾调用。
     /// </summary>
-    public void RefreshFromSegment()
+    public void RefreshFromSegment(Segment? updated = null)
     {
+        // RebuildGroups 复用本卡时传入库里最新查到的 Segment（EF 短上下文每次建新对象）：
+        // 换掉持有的旧引用，否则「上传/拆分后 text/标签写库了、但卡片读的还是旧空对象」→ 台词/标签不刷新。
+        if (updated is not null) _segment = updated;
         StartTime = _segment.StartTime;
         EndTime = _segment.EndTime;
         QualityScore = _segment.QualityScore;
