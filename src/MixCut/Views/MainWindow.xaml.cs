@@ -52,6 +52,9 @@ public partial class MainWindow : Window
         UpdateBannerHost.DataContext = updateBannerVm;
         _ = updateBannerVm.CheckSilentlyAsync();
 
+        // issue #4 Phase 3：导出命令 smoke 若失败已自动降级 CPU 编码，等其跑完后用人话提示用户。
+        _ = NotifyIfExportFellBackToCpuAsync();
+
         ProjectList.ItemsSource = _vm.ProjectVM.Projects;
         NavList.ItemsSource = NavigationItemExtensions.All.Select(n => n.LabelWithIcon()).ToList();
         NavList.SelectedIndex = Math.Clamp(_settings.LastNavItem, 0, NavigationItemExtensions.All.Count - 1);
@@ -483,12 +486,30 @@ public partial class MainWindow : Window
         base.OnKeyDown(e);
     }
 
-    private void OnArchiveProject(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// issue #4 Phase 3：若导出命令 smoke 失败已把编码降级到 CPU，等 smoke 跑完后弹一条人话提示。
+    /// 不吓人（不显示 exit code / codec 私有选项报错），只告诉用户「已切软件编码、导出照常可用」。
+    /// </summary>
+    private async System.Threading.Tasks.Task NotifyIfExportFellBackToCpuAsync()
     {
-        if (ProjectList.SelectedItem is Project project)
+        try
         {
-            _vm.ProjectVM.ArchiveProjectCommand.Execute(project);
-            RefreshAfterProjectChange();
+            // smoke 在启动后台 Task 里跑（ffmpeg 探测 + 编码 testsrc），最多等 ~10s 拿结果。
+            for (var i = 0; i < 20 && !Infrastructure.ExportCommandSmokeTest.Completed; i++)
+            {
+                await System.Threading.Tasks.Task.Delay(500);
+            }
+            if (Infrastructure.ExportCommandSmokeTest.DidFallbackToCpu)
+            {
+                Dispatcher.Invoke(() =>
+                    MixCut.Views.Components.ToastService.Show(
+                        "当前 ffmpeg 与硬件加速不兼容，已自动切回 CPU 编码，导出可正常使用",
+                        MixCut.Views.Components.ToastStyle.Warning));
+            }
+        }
+        catch
+        {
+            // 提示失败绝不影响任何功能（导出降级已在后台完成）。
         }
     }
 

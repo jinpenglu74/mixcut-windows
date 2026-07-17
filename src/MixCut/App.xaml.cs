@@ -940,7 +940,14 @@ public partial class App : Application
 
         // 启动时主动跑一次硬件能力探测（包含 encode smoke test + decode hwaccel 选择），
         // 结果写日志。后续所有 ffmpeg / ASR 任务用探测结果按优先级走 GPU/CPU 兜底。
-        _ = Task.Run(() => Infrastructure.HardwareEncoderProbe.EagerInit());
+        _ = Task.Run(() =>
+        {
+            Infrastructure.HardwareEncoderProbe.EagerInit();
+            // issue #4 Phase 3：探测出硬件编码器后，再用「导出实际参数」跑一次真实 smoke。
+            // 某个 codec 私有选项被新版 ffmpeg 拒识时自动降级 CPU，杜绝导出 0/N 全崩
+            // （v0.4.0 -allow_sw 事故：HardwareEncoderProbe 的通用 smoke 绿、但真实导出全失败）。
+            Infrastructure.ExportCommandSmokeTest.Run();
+        });
 
         // 统一捕获未处理异常 —— 之前出过 async void 事件处理器异常直接终止进程的事故，
         // 看 EventLog 也拿不到堆栈。三个 hook 兜底：
@@ -1004,9 +1011,11 @@ public partial class App : Application
             AddColumnIfMissing(db, "SchemeSegments", "SelectedSegmentDubId", "TEXT");
             // #13 配音变体参与排列组合：原版默认参与(1)、改写版默认不参与(0，opt-in)
             AddColumnIfMissing(db, "Segments", "OriginalParticipatesInCombination", "INTEGER NOT NULL DEFAULT 1");
-            AddColumnIfMissing(db, "SegmentDubs", "ParticipatesInCombination", "INTEGER NOT NULL DEFAULT 0");
-            // #15 逐句字幕：配音变体的逐句时间行（JSON）；配音生成后 whisper 对齐自动写入
-            AddColumnIfMissing(db, "SegmentDubs", "CaptionLinesJson", "TEXT");
+            // 注意（issue #21）：SegmentDubs 的两处补列（ParticipatesInCombination / CaptionLinesJson）
+            // 必须放到 CreateTableIfMissing(SegmentDubs) 之后（见下方）。老库首次升级时 SegmentDubs 表
+            // 还不存在，若在建表前 AddColumnIfMissing 会撞 "no such table" 静默失败 → 该表建出来后仍缺列 →
+            // 之后任何 eager-load SegmentDubs 的查询（LoadSchemes）报 "no such column"，表现为「生成方案失败」。
+            // 通用铁律：任何 AddColumnIfMissing(表X,*) 都必须排在 CreateTableIfMissing(表X) 之后。
             // #12 分镜头 AI 画面替换：Segment 四个「替换画面」列 + PhysicalShots / ShotVariants 两张新表
             AddColumnIfMissing(db, "Segments", "ReplacedPictureVideoPath", "TEXT");
             AddColumnIfMissing(db, "Segments", "ReplacedPictureThumbnailPath", "TEXT");
@@ -1058,10 +1067,16 @@ public partial class App : Application
                     ""GeneratedForTextHash"" TEXT NOT NULL DEFAULT '',
                     ""StatusRaw"" TEXT NOT NULL DEFAULT 'Pending',
                     ""ParticipatesInCombination"" INTEGER NOT NULL DEFAULT 0,
+                    ""CaptionLinesJson"" TEXT,
                     CONSTRAINT ""FK_SegmentDubs_Segments_SegmentId"" FOREIGN KEY (""SegmentId"")
                         REFERENCES ""Segments"" (""Id"") ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS ""IX_SegmentDubs_SegmentId"" ON ""SegmentDubs"" (""SegmentId"");");
+            // issue #21：SegmentDubs 建表完成后再补列（先建表后补列铁律）。兼顾两种老库：
+            // ① 从没建过 SegmentDubs 的库 → 上面 CreateTableIfMissing 已建全（DDL 含下列两列），补列跳过；
+            // ② 中间态库（SegmentDubs 已存在但因历史顺序 bug 缺列）→ 这里把缺的列补上。
+            AddColumnIfMissing(db, "SegmentDubs", "ParticipatesInCombination", "INTEGER NOT NULL DEFAULT 0");
+            AddColumnIfMissing(db, "SegmentDubs", "CaptionLinesJson", "TEXT");
 
             // 清理上次未正常完成的中间态视频（崩溃/强退导致状态卡在分析中）。
             // 对齐 macOS 版 MixCutApp.resetStaleAnalyzingStatus。

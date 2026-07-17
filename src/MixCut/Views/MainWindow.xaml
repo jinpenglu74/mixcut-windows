@@ -136,7 +136,6 @@
                             <ListBox.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="重命名…" Click="OnRenameProject" />
-                                    <MenuItem Header="归档" Click="OnArchiveProject" />
                                     <Separator />
                                     <MenuItem Header="删除" Click="OnDeleteProject" />
                                 </ContextMenu>

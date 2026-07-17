@@ -164,6 +164,10 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
         _context = _dbFactory.CreateDbContext();
 
         Project? dbProject = null;
+        // issue #21：记录已成功 SaveChanges 落库的策略数。用于 catch 里区分
+        // 「方案数据已落库、只是之后的收尾/刷新(LoadSchemes)失败」（不报错、不回滚）
+        // 与「一个策略都没落库的彻底失败」（报错 + 回滚状态）。
+        var persistedStrategyCount = 0;
         try
         {
             // 注意：Segments.Video 是反向导航，EF Core 会自动 fix-up，不能再 ThenInclude
@@ -303,6 +307,7 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
                 }
 
                 _context.SaveChanges();
+                persistedStrategyCount++;   // issue #21：该策略（含其变体/分镜）已成功落库
                 _logger.LogInformation("策略「{Name}」: {Count} 个变体",
                     strategyResult.Name, compositions?.Count ?? 0);
             }
@@ -320,6 +325,33 @@ public partial class SchemeViewModel : ObservableObject, IDisposable
             ErrorMessage = null;
             RollbackGeneratingStatus(dbProject);
             _logger.LogInformation("[SchemeGen] 用户取消生成，已回滚项目状态 project={Id}", dbProject?.Id);
+        }
+        catch (Exception ex) when (persistedStrategyCount > 0)
+        {
+            // issue #21：方案数据在循环内每个策略 SaveChanges 时就已经落库了。真正报错的地方
+            // 往往在这之后（LoadSchemes 的 eager-load 撞老库缺列等），此时数据其实已存好、
+            // 重开项目即可见。绝不能把「已成功」误报成「方案生成失败」，也绝不能回滚状态
+            // （回滚会把已 Completed 的项目打回 Ready，用户以为白干了）。
+            ErrorMessage = null;
+            _logger.LogWarning(ex, "[SchemeGen] 方案已落库 {Count} 个策略，收尾/刷新失败（数据未丢）", persistedStrategyCount);
+            try
+            {
+                // 异常可能发生在把状态置 Completed 之前 → 这里兜底，确保不卡在 Generating。
+                if (dbProject is not null && dbProject.Status != ProjectStatus.Completed)
+                {
+                    dbProject.Status = ProjectStatus.Completed;
+                    dbProject.UpdatedAt = DateTime.Now;
+                    _context!.SaveChanges();
+                }
+                // 尽力刷新一次显示；schema 类问题在本进程内无法自愈，吞掉并引导用户重开项目。
+                LoadSchemes(project);
+                GenerationProgress = $"生成完成：{Strategies.Count} 个策略，共 {Schemes.Count} 个视频方案";
+            }
+            catch (Exception ex2)
+            {
+                _logger.LogWarning(ex2, "[SchemeGen] 收尾刷新再次失败，等待用户重开项目显示");
+                GenerationProgress = $"方案已生成（{persistedStrategyCount} 个策略），请重新打开该项目查看";
+            }
         }
         catch (Exception ex)
         {

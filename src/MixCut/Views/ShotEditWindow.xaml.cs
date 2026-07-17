@@ -508,10 +508,18 @@ public partial class ShotEditWindow : Window
                 Background = new SolidColorBrush(Color.FromArgb(0xD9, 0, 0, 0)), Child = sp,
             };
         }
+        else if (v.Status == ShotVariantStatus.TimedOut)
+        {
+            // 超时：琥珀感叹号（云端可能仍在跑，可重试拉取、不重复扣费）。区别于「失败」的红色。
+            border = StatusThumb("⏱ 已超时", Color.FromRgb(0x35, 0x2C, 0x08), new SolidColorBrush(Color.FromRgb(0xC0, 0x6F, 0x00)));
+            border.ToolTip = string.IsNullOrEmpty(v.FriendlyError)
+                ? "本地等待超时，任务可能仍在云端生成，点「重试」重新获取，不会重复扣费。" : v.FriendlyError;
+        }
         else if (v.Status == ShotVariantStatus.Failed)
         {
-            border = StatusThumb("⚠ 失败", Color.FromRgb(0x3A, 0x2A, 0x00), new SolidColorBrush(Color.FromRgb(0xC0, 0x6F, 0x00)));
-            border.ToolTip = string.IsNullOrEmpty(v.FriendlyError) ? "生成失败，可删除后重试" : v.FriendlyError;
+            // 失败：红色感叹号。
+            border = StatusThumb("⚠ 失败", Color.FromRgb(0x35, 0x18, 0x18), new SolidColorBrush(Color.FromRgb(0xD3, 0x3A, 0x3A)));
+            border.ToolTip = string.IsNullOrEmpty(v.FriendlyError) ? "生成失败" : v.FriendlyError;
         }
         else
         {
@@ -537,6 +545,17 @@ public partial class ShotEditWindow : Window
                 Foreground = Brush("SuccessGreenBrush"),
             });
         }
+        // 按钮矩阵（对齐 macOS variantActions）：按状态给不同的操作。
+        // - TimedOut          →「重试」＝用旧 taskId 续查（不计费）
+        // - Failed 且无 taskId →「重试」＝重新提交（之前没提交成功、没扣费）
+        // - Failed 且有 taskId →「重新生成」＝新任务，弹计费二次确认
+        // - Completed / 正常   → 无（仅删除）
+        if (!busy)
+        {
+            var action = BuildVariantActionButton(v);
+            if (action is not null) stack.Children.Add(action);
+        }
+
         // 删除按钮（生成中禁用）
         var del = new Button
         {
@@ -548,6 +567,58 @@ public partial class ShotEditWindow : Window
         del.Click += async (_, _) => { try { await _vm.DeleteVariantAsync(v.Id); } catch (Exception ex) { ShowError("删除失败：" + ex.Message); } };
         stack.Children.Add(del);
         return stack;
+    }
+
+    /// <summary>按变体状态构造操作按钮（重试 / 重新生成 + 计费二次确认）；无需操作返回 null。</summary>
+    private Button? BuildVariantActionButton(ShotVariant v)
+    {
+        string text, tip;
+        Func<Task> action;
+
+        if (v.Status == ShotVariantStatus.TimedOut)
+        {
+            text = "↻ 重试";
+            tip = "重新获取这次任务的结果，不会重复扣费";
+            action = () => _vm.RetryFetchAsync(v.Id);
+        }
+        else if (v.Status == ShotVariantStatus.Failed && string.IsNullOrEmpty(v.TaskId))
+        {
+            // 提交阶段就失败了、没扣过费 → 重试＝重新提交。
+            text = "↻ 重试";
+            tip = "上次没提交成功、未扣费，点此重新发起";
+            action = () => _vm.RegenerateAsync(v.Id);
+        }
+        else if (v.Status == ShotVariantStatus.Failed) // 有 taskId：阿里 FAILED / 结果过期，旧任务已废
+        {
+            text = "⟳ 重新生成";
+            tip = "会发起一次新任务并按次计费";
+            action = async () =>
+            {
+                var confirm = MessageBox.Show(
+                    "重新生成会发起一次新任务并按次计费，确定吗？\n\n" + (v.FriendlyError ?? string.Empty),
+                    "重新生成（计费）", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+                if (confirm != MessageBoxResult.OK) return;
+                await _vm.RegenerateAsync(v.Id);
+            };
+        }
+        else
+        {
+            return null; // Completed / 正常态：只保留删除
+        }
+
+        var btn = new Button
+        {
+            Content = text, FontSize = 10, Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(4, 1, 4, 1),
+            Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            Foreground = Brush("AccentBlueBrush"), Cursor = System.Windows.Input.Cursors.Hand,
+            HorizontalAlignment = HorizontalAlignment.Left, ToolTip = tip,
+        };
+        btn.Click += async (_, _) =>
+        {
+            try { await action(); }
+            catch (Exception ex) { ShowError("操作失败：" + ex.Message); }
+        };
+        return btn;
     }
 
     private UIElement BuildPromptArea(PhysicalShot shot)

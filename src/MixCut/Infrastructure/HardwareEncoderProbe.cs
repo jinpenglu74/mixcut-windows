@@ -111,6 +111,20 @@ public static class HardwareEncoderProbe
     /// <summary>启动时主动触发一次探测，让结果尽早入日志。</summary>
     public static void EagerInit() => EnsureProbed();
 
+    /// <summary>
+    /// issue #4 Phase 3：把硬件编码器降级为 null，让所有导出走 libx264 CPU 编码（一定能跑）。
+    /// 由 <see cref="ExportCommandSmokeTest"/> 在「导出实际参数」smoke 失败时调用，
+    /// 杜绝某个 codec 私有选项被新版 ffmpeg 拒识导致导出 0/N 全崩（v0.4.0 allow_sw 类事故）。
+    /// </summary>
+    public static void DisableHardwareEncoder()
+    {
+        lock (_gate)
+        {
+            _h264Hw = null;
+            _h265Hw = null;
+        }
+    }
+
     private static void EnsureProbed()
     {
         lock (_gate)

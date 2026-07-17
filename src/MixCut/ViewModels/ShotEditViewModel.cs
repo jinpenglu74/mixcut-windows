@@ -310,7 +310,7 @@ public sealed class ShotEditViewModel
 
     // ---- AI 变体 ----
 
-    /// <summary>为某镜头生成 AI 画面变体。对应 mac generateVariant。</summary>
+    /// <summary>为某镜头生成 AI 画面变体（首次）。对应 mac generateVariant。</summary>
     public async Task GenerateVariantAsync(Guid shotId, string prompt, CancellationToken ct = default)
     {
         var p = prompt.Trim();
@@ -331,6 +331,7 @@ public sealed class ShotEditViewModel
             return;
         }
 
+        // 新建占位（Generating, TaskId=null）—— taskId 要等提交成功那一刻才落库。
         var variantId = Guid.NewGuid();
         await using (var db = await _dbFactory.CreateDbContextAsync(ct))
         {
@@ -345,27 +346,115 @@ public sealed class ShotEditViewModel
         await ReloadShotsAsync(ct);
         VariantProgress?.Invoke(variantId, "生成中");
 
+        await RunGenerationAsync(shotId, variantId, p, ct);
+    }
+
+    /// <summary>
+    /// 重新生成（会计费）：复用同一条记录，清 TaskId/旧产物/错误 → Generating → 重新走完整生成。
+    /// 用于 Failed / Expired（旧任务已废）。调用前 UI 对「有 taskId 的 Failed」已弹计费二次确认。
+    /// </summary>
+    public async Task RegenerateAsync(Guid variantId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(SourceVideoPath) || Fps <= 0 || string.IsNullOrEmpty(VideoHash))
+        {
+            ErrorMessage = "缺少视频 / 帧率 / 哈希信息，无法重新生成";
+            RaiseChanged();
+            return;
+        }
+        Guid shotId;
+        string prompt;
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, ct);
+            if (v is null || v.ShotId is null) return;
+            shotId = v.ShotId.Value;
+            prompt = v.Prompt;
+            // 旧任务已废：删本地旧产物、清 taskId/错误/产物路径 → 回到 Generating。
+            TryDelete(v.ResultVideoPath);
+            TryDelete(v.ThumbnailPath);
+            v.TaskId = null;
+            v.FriendlyError = null;
+            v.ResultVideoPath = null;
+            v.ThumbnailPath = null;
+            v.Status = ShotVariantStatus.Generating;
+            await db.SaveChangesAsync(ct);
+        }
+        BusyVariantIds.Add(variantId);
+        await ReloadShotsAsync(ct);
+        VariantProgress?.Invoke(variantId, "生成中");
+
+        await RunGenerationAsync(shotId, variantId, prompt, ct);
+    }
+
+    /// <summary>
+    /// 超时重试（<b>不计费</b>）：用已落库的 taskId 直接续查旧任务，查到 SUCCEEDED 就下载成片。
+    /// 只对有 TaskId 的 TimedOut 变体有意义。网络抖动等失败 → 回退 TimedOut（保留 taskId，可再重试）。
+    /// </summary>
+    public async Task RetryFetchAsync(Guid variantId, CancellationToken ct = default)
+    {
+        string taskId;
+        Guid shotId;
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, ct);
+            if (v is null || string.IsNullOrEmpty(v.TaskId) || v.ShotId is null) return;
+            taskId = v.TaskId!;
+            shotId = v.ShotId.Value;
+            v.Status = ShotVariantStatus.Generating;   // 界面显示「云端生成中」
+            v.FriendlyError = null;
+            await db.SaveChangesAsync(ct);
+        }
+        BusyVariantIds.Add(variantId);
+        await ReloadShotsAsync(ct);
+        VariantProgress?.Invoke(variantId, "云端生成中");
+
         try
         {
-            var result = await _variantService.GenerateAsync(
-                SourceVideoPath, VideoHash, shotId, variantId,
-                shot.StartFrame, shot.EndFrame, Fps, p,
+            var result = await _variantService.ResumeAsync(
+                taskId, VideoHash, shotId, variantId,
                 status => VariantProgress?.Invoke(variantId, status), ct);
-
-            await using var db = await _dbFactory.CreateDbContextAsync(ct);
-            var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, ct);
-            if (v is not null)
-            {
-                v.ResultVideoPath = result.ResultVideoPath;
-                v.ThumbnailPath = string.IsNullOrEmpty(result.ThumbnailPath) ? null : result.ThumbnailPath;
-                v.Status = ShotVariantStatus.Completed;
-                await db.SaveChangesAsync(ct);
-            }
+            await ApplyOutcomeAsync(variantId, result);
             ErrorMessage = null;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
+            // 续查失败（网络抖动等）→ 回退 TimedOut，taskId 保留，用户可再重试；绝不清空 taskId。
+            await RevertToTimedOutAsync(variantId);
+            ErrorMessage = "重新获取失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex);
+            _logger.LogWarning(ex, "[ShotEditDiag] 超时重试失败 variant={Variant}", variantId);
+        }
+        finally
+        {
+            BusyVariantIds.Remove(variantId);
+            await ReloadShotsAsync(ct);
+        }
+    }
+
+    /// <summary>提交 + 轮询到终局的公共流程（供首次生成 / 重新生成复用）。</summary>
+    private async Task RunGenerationAsync(Guid shotId, Guid variantId, string prompt, CancellationToken ct)
+    {
+        var shot = Shots.FirstOrDefault(s => s.Id == shotId);
+        if (shot is null)
+        {
+            BusyVariantIds.Remove(variantId);
+            await ReloadShotsAsync(ct);
+            return;
+        }
+        try
+        {
+            var result = await _variantService.GenerateAsync(
+                SourceVideoPath, VideoHash, shotId, variantId,
+                shot.StartFrame, shot.EndFrame, Fps, prompt,
+                onTaskCreated: tid => PersistTaskIdAsync(variantId, tid),   // 提交成功即落库 taskId
+                onStatus: status => VariantProgress?.Invoke(variantId, status), ct);
+            await ApplyOutcomeAsync(variantId, result);
+            ErrorMessage = null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // 走到这里 = 提交阶段就失败了（切片 / SubmitAsync 抛错）：没拿到 taskId、也没扣费。
             // §红线：ffmpeg（抽帧/切片）失败要走 ffmpeg 专用翻译，ApiErrorClassifier 认不出 stderr 会回落原文。
             var friendly = ex switch
             {
@@ -373,21 +462,82 @@ public sealed class ShotEditViewModel
                 MixCut.Services.VideoProcessing.FFmpegException => MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex),
                 _ => "画面替换失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex),
             };
-            await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
-            var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
-            if (v is not null)
-            {
-                v.Status = ShotVariantStatus.Failed;
-                v.FriendlyError = friendly;
-                await db.SaveChangesAsync(CancellationToken.None);
-            }
+            await MarkFailedNoTaskAsync(variantId, "提交失败：" + friendly);
             ErrorMessage = friendly;
-            _logger.LogError(ex, "[ShotEditDiag] 变体生成失败 variant={Variant}", variantId);
+            _logger.LogError(ex, "[ShotEditDiag] 变体提交失败（无 taskId、未扣费）variant={Variant}", variantId);
         }
         finally
         {
             BusyVariantIds.Remove(variantId);
             await ReloadShotsAsync(ct);
+        }
+    }
+
+    /// <summary>提交成功那一刻把 taskId 落库（用 variantId 定位，不跨线程持有实体）。</summary>
+    private async Task PersistTaskIdAsync(Guid variantId, string taskId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
+        var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
+        if (v is not null)
+        {
+            v.TaskId = taskId;
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>把生成/续查终局写回该变体记录（状态 + 产物 + 人话文案）。</summary>
+    private async Task ApplyOutcomeAsync(Guid variantId, VariantResult r)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
+        var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
+        if (v is null) return;
+        switch (r.Outcome)
+        {
+            case VariantOutcome.Completed:
+                v.ResultVideoPath = r.ResultVideoPath;
+                v.ThumbnailPath = string.IsNullOrEmpty(r.ThumbnailPath) ? null : r.ThumbnailPath;
+                v.Status = ShotVariantStatus.Completed;
+                v.FriendlyError = null;
+                break;
+            case VariantOutcome.TimedOut:
+                v.Status = ShotVariantStatus.TimedOut;
+                v.FriendlyError = "本地等待已超过 20 分钟，任务可能仍在云端生成。点「重试」重新获取结果，不会重复扣费。";
+                break;
+            case VariantOutcome.Failed:
+                v.Status = ShotVariantStatus.Failed;
+                v.FriendlyError = "生成失败：" + (r.FailReason ?? "未知错误");
+                break;
+            case VariantOutcome.Expired:
+                v.Status = ShotVariantStatus.Failed;
+                v.FriendlyError = "云端结果已过期（阿里仅保留 24 小时），需重新生成（会重新计费）。";
+                break;
+        }
+        await db.SaveChangesAsync(CancellationToken.None);
+    }
+
+    /// <summary>提交阶段失败（无 taskId）：置 Failed，TaskId 保持 null（可「重试」＝重新提交，之前没扣费）。</summary>
+    private async Task MarkFailedNoTaskAsync(Guid variantId, string friendly)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
+        var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
+        if (v is not null)
+        {
+            v.Status = ShotVariantStatus.Failed;
+            v.FriendlyError = friendly;
+            await db.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>超时重试因网络抖动失败时回退 TimedOut，保留 taskId 让用户可再重试。</summary>
+    private async Task RevertToTimedOutAsync(Guid variantId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync(CancellationToken.None);
+        var v = await db.ShotVariants.FirstOrDefaultAsync(x => x.Id == variantId, CancellationToken.None);
+        if (v is not null)
+        {
+            v.Status = ShotVariantStatus.TimedOut;
+            v.FriendlyError = "重新获取时网络异常，任务仍可能在云端。请稍后再点「重试」，不会重复扣费。";
+            await db.SaveChangesAsync(CancellationToken.None);
         }
     }
 

@@ -162,13 +162,10 @@ public partial class ProjectViewModel : ObservableObject
         FetchProjects();
     }
 
-    /// <summary>归档项目。</summary>
-    [RelayCommand]
-    private void ArchiveProject(Project project)
-    {
-        UpdateProject(project.Id, p => p.Status = ProjectStatus.Archived);
-        FetchProjects();
-    }
+    // issue #16（对齐 macOS v0.8.1）：已移除「归档」——归档后项目从列表消失且无从恢复，
+    // 是个只会误伤用户的无用功能。右键菜单现只保留「重命名」+ 带二次确认的「删除」。
+    // ProjectStatus.Archived 枚举与相关颜色/文案转换器保留（防御历史库里已有的归档项目切视图时不崩），
+    // 但代码里不再有任何地方把项目写成 Archived；FetchProjects 的 `!= Archived` 过滤保留无害。
 
     /// <summary>重命名项目。</summary>
     public void RenameProject(Project project, string newName)

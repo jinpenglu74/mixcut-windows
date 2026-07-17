@@ -745,6 +745,16 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
                     card.RefreshFromSegment();
                 }
             }
+            // issue #19：开始帧变化的分镜要按新首帧重抽缩略图（首帧 = StartFrame 处那一帧）。
+            // 只有起点动了才影响首帧：segment 自己被调开始、或 next 被同步了起点都在此列；
+            // previous 只动终点、首帧不变，天然不满足下面的条件。结束边界调整不重抽。
+            foreach (var item in affected)
+            {
+                if (item.StartFrame != snapshots[item.Id].StartFrame)
+                {
+                    ScheduleFirstFrameRethumb(item);
+                }
+            }
             return true;
         }
 
@@ -763,6 +773,85 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
 
     private static double EffectiveEditFps(Segment segment) =>
         segment.EffectiveFps > 0 ? segment.EffectiveFps : 30.0;
+
+    /// <summary>每张卡的首帧重抽 debounce：连点 ±帧时取消上一次未落地的重抽，只在停手后抽一次。</summary>
+    private readonly Dictionary<Guid, CancellationTokenSource> _rethumbCts = new();
+
+    /// <summary>
+    /// issue #19：调「开始」边界后按新 StartFrame 重抽首帧缩略图、写回 ThumbnailPath，让卡片首帧预览跟着变。
+    /// 之前调开始边界从不重抽首帧、且缩略图文件名固定（seg_{id}.jpg），ThumbnailPath 值不变 → 卡片 INPC
+    /// 不触发 → 首帧「怎么调都不变」。这里文件名带 startFrame 保证路径唯一，值一变卡片就刷新。
+    /// 带 ~400ms per-segment debounce，连点微调不会反复抽帧卡顿。
+    /// </summary>
+    private void ScheduleFirstFrameRethumb(Segment segment)
+    {
+        if (_ffmpeg is null) return;
+        var videoPath = segment.Video?.LocalPath;
+        if (string.IsNullOrEmpty(videoPath)) return;
+
+        // debounce：取消该分镜上一次尚未落地的重抽。
+        if (_rethumbCts.TryGetValue(segment.Id, out var prev))
+        {
+            prev.Cancel();
+            prev.Dispose();
+        }
+        var cts = new CancellationTokenSource();
+        _rethumbCts[segment.Id] = cts;
+        _ = RethumbAfterDelayAsync(segment.Id, videoPath!, segment.StartFrame, EffectiveEditFps(segment), cts.Token);
+    }
+
+    private async Task RethumbAfterDelayAsync(Guid segId, string videoPath, int startFrame, double fps, CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(400, token);   // 停手 400ms 才真的抽帧
+            if (token.IsCancellationRequested) return;
+
+            var timeSec = Utilities.FrameTime.FrameToSeconds(startFrame, fps);
+            var thumbDir = System.IO.Path.Combine(Utilities.AppPaths.Root, "Thumbnails");
+            System.IO.Directory.CreateDirectory(thumbDir);
+            // 文件名带 startFrame → 路径唯一 → ThumbnailPath 一变卡片就刷新（对齐 mac「缩略图路径带 startFrame」）。
+            var newPath = System.IO.Path.Combine(thumbDir, $"seg_{segId}_f{startFrame}.jpg");
+            if (!System.IO.File.Exists(newPath))
+            {
+                await _ffmpeg!.GenerateThumbnailAsync(videoPath, newPath, timeSec);
+            }
+            if (token.IsCancellationRequested || !System.IO.File.Exists(newPath)) return;
+
+            // 写回 DB（短上下文）。
+            await using (var db = await _dbFactory.CreateDbContextAsync())
+            {
+                var seg = await db.Segments.FirstOrDefaultAsync(x => x.Id == segId);
+                if (seg is not null)
+                {
+                    seg.ThumbnailPath = newPath;
+                    await db.SaveChangesAsync();
+                }
+            }
+            // 同步内存 segment + 预热 cache + 刷新卡片（UI 线程）。
+            var memSeg = _segments.FirstOrDefault(s => s.Id == segId);
+            if (memSeg is not null) memSeg.ThumbnailPath = newPath;
+            _ = Infrastructure.ThumbnailCache.Shared.LoadAsync(newPath);
+
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            void Refresh()
+            {
+                if (_cardIndex.Values.FirstOrDefault(c => c.Segment.Id == segId) is { } card)
+                {
+                    card.RefreshFromSegment();
+                }
+            }
+            if (dispatcher is null || dispatcher.CheckAccess()) Refresh();
+            else dispatcher.Invoke(Refresh);
+
+            _logger.LogInformation("[ThumbRethumb] segment={Id} startFrame={Frame} → {Path}", segId, startFrame, newPath);
+        }
+        catch (OperationCanceledException) { /* 被后续微调取消，属正常 debounce */ }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ThumbRethumb] segment {Id} 首帧重抽失败", segId);
+        }
+    }
 
     /// <summary>根据当前时间范围重新从 ASR 提取台词（中心点匹配，避免跨段重复）。</summary>
     private static void ReExtractText(Segment segment)

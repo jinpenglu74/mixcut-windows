@@ -13,6 +13,11 @@ public enum ShotVariantStatus
     Generating,
     /// <summary>完成并已落地结果视频。</summary>
     Completed,
+    /// <summary>
+    /// 本地轮询超时，但云端任务可能仍在跑（阿里按任务成功计费，与客户端是否取回无关）。
+    /// TaskId 保留 → 可用「重试」以同一 taskId 再查（不重复扣费）。对应 macOS timedOut。
+    /// </summary>
+    TimedOut,
     /// <summary>失败。</summary>
     Failed,
 }

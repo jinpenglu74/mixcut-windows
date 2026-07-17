@@ -296,14 +296,16 @@ public partial class ImportView : UserControl, IProjectView
         }
         try
         {
-            var text = BuildLyricsForCopy(row.Video);
+            var (text, count, withTimecode) = BuildLyricsForCopy(row.Video);
             if (string.IsNullOrEmpty(text))
             {
                 Components.ToastService.Show("暂无台词可复制", Components.ToastStyle.Warning);
                 return;
             }
             Clipboard.SetText(text);
-            Components.ToastService.Show("全部台词已复制", Components.ToastStyle.Success);
+            // issue #8：Toast 区分句数 / 是否含时间码，让用户确认复制到的是哪种格式。
+            var msg = withTimecode ? $"已复制 {count} 句台词（含时间码）" : "已复制全部台词（无时间码）";
+            Components.ToastService.Show(msg, Components.ToastStyle.Success);
         }
         catch (Exception)
         {
@@ -312,13 +314,17 @@ public partial class ImportView : UserControl, IProjectView
         }
     }
 
-    /// <summary>把视频台词拼成带起止时间的 ASR 文本（每句一行）。</summary>
-    private static string BuildLyricsForCopy(Video video)
+    /// <summary>
+    /// 把视频台词拼成带起止时间的 ASR 文本（每句一行）。
+    /// 返回：拼好的文本 + 有效句数（仅带时间码时有意义）+ 是否含时间码。
+    /// </summary>
+    private static (string Text, int SentenceCount, bool WithTimecode) BuildLyricsForCopy(Video video)
     {
         var asr = video.AsrSentences;
         if (asr is { Count: > 0 })
         {
             var sb = new System.Text.StringBuilder();
+            var count = 0;
             foreach (var s in asr)
             {
                 var t = (s.Text ?? string.Empty).Trim();
@@ -326,11 +332,12 @@ public partial class ImportView : UserControl, IProjectView
                 sb.Append('[').Append(FormatLyricTime(s.Start))
                   .Append(" - ").Append(FormatLyricTime(s.End))
                   .Append("] ").Append(t).Append('\n');
+                count++;
             }
-            return sb.ToString().TrimEnd('\n');
+            return (sb.ToString().TrimEnd('\n'), count, true);
         }
         // 无原生句子：退化为纯台词（无时间戳）
-        return video.Transcript?.Trim() ?? string.Empty;
+        return (video.Transcript?.Trim() ?? string.Empty, 0, false);
     }
 
     /// <summary>格式化为「分:秒.十分位」，如 0:02.3 / 1:05.8。对齐 macOS 复制格式。</summary>
