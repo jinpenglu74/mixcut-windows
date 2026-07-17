@@ -37,6 +37,13 @@ public class Video
     /// </summary>
     public string? ClonedVoiceId { get; set; }
 
+    /// <summary>
+    /// #17 自建分镜：true = 用户上传的「成品分镜」的载体视频（一文件=一分镜、不切分）。
+    /// 这类载体视频要从所有「视频列表/计数」里过滤掉（只在分镜库以分镜形态出现），
+    /// 但它那条覆盖整片的分镜照常计入「分镜数」。默认 false，旧数据自动为普通视频、无需迁移语义。
+    /// </summary>
+    public bool IsUserUploaded { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
     // ---- 导航属性 ----

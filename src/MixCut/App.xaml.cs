@@ -63,6 +63,7 @@ public partial class App : Application
         services.AddSingleton<PromptLoader>();
         services.AddSingleton<AIProviderManager>();
         services.AddSingleton<AIAnalysisService>();
+        services.AddSingleton<Services.UserSegments.UserSegmentImportService>();   // #17 自建分镜上传
         services.AddSingleton<SchemeGenerationService>();
         services.AddSingleton<BoundaryOptimizerService>();
         services.AddSingleton<ExportService>();
@@ -1006,6 +1007,8 @@ public partial class App : Application
             AddColumnIfMissing(db, "Segments", "MaskStyleRaw", "TEXT NOT NULL DEFAULT 'Blur'");
             AddColumnIfMissing(db, "Segments", "MaskRectJson", "TEXT");
             AddColumnIfMissing(db, "Videos", "ClonedVoiceId", "TEXT");
+            // #17 自建分镜：载体视频标记（默认 0=普通视频，旧数据无副作用）。
+            AddColumnIfMissing(db, "Videos", "IsUserUploaded", "INTEGER NOT NULL DEFAULT 0");
             // 每个分镜单独克隆音色（配音跟本段原声一致）：Segment 新增自己的克隆音色列
             AddColumnIfMissing(db, "Segments", "ClonedVoiceId", "TEXT");
             AddColumnIfMissing(db, "SchemeSegments", "SelectedSegmentDubId", "TEXT");

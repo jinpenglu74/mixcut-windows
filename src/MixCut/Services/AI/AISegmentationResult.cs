@@ -108,6 +108,44 @@ public sealed class AnnotatedSegment
 }
 
 /// <summary>
+/// #17「只打标不切分」的 AI 输出：给定一段已切好的分镜台词 → 只回语义类型/位置/关键词，不切分、不带时间。
+/// 字段宽容化同 <see cref="AnnotatedSegment"/>（缺字段/null 都有默认），复用同一套语义类型口径。
+/// </summary>
+public sealed class SegmentTagsResult
+{
+    /// <summary>语义类型数组（新格式）。</summary>
+    [JsonPropertyName("types")]
+    public List<string>? Types { get; set; }
+
+    /// <summary>语义类型单值（兼容旧格式）。</summary>
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    private string _position = "中间";
+    [JsonPropertyName("position")]
+    public string Position
+    {
+        get => _position;
+        set => _position = string.IsNullOrEmpty(value) ? "中间" : value;
+    }
+
+    private List<string> _keywords = new();
+    [JsonPropertyName("keywords")]
+    public List<string> Keywords
+    {
+        get => _keywords;
+        set => _keywords = value ?? new List<string>();
+    }
+
+    /// <summary>有效语义类型：优先 types 数组，降级 type 单值，再降级「过渡」。</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> EffectiveTypes =>
+        Types is { Count: > 0 } ? Types
+        : !string.IsNullOrEmpty(Type) ? new List<string> { Type! }
+        : new List<string> { "过渡" };
+}
+
+/// <summary>
 /// AI 分析输出。对应 macOS 版 AISegmentationResult。
 /// segments 数组用 lossless 解码：单条 segment 字段错只丢这一条，前面已解的留下。
 /// 对齐 macOS commit 3406d61。

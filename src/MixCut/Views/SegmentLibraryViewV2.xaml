@@ -126,12 +126,22 @@
                         BorderThickness="0" Padding="8,3" Margin="0,0,8,0"
                         FontSize="11" Cursor="Hand"
                         Click="OnResetFilter" Visibility="Collapsed" />
-                <Button Grid.Column="2" x:Name="SelectionModeButton" Content="☑ 多选"
-                        Background="White"
-                        BorderBrush="{StaticResource BorderHoverBrush}"
-                        BorderThickness="1" Padding="10,3"
-                        FontSize="11" Cursor="Hand"
-                        Click="OnToggleSelectionMode" />
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <!-- #17：上传自建分镜（成品分镜，不切分，只 ASR + 打标） -->
+                    <Button x:Name="UploadUserSegmentButton" Content="⬆ 上传自建分镜"
+                            Background="White"
+                            BorderBrush="{StaticResource BorderHoverBrush}"
+                            BorderThickness="1" Padding="10,3" Margin="0,0,8,0"
+                            FontSize="11" Cursor="Hand"
+                            ToolTip="上传已剪好的成品分镜（mp4/mov，单条 ≤15 秒，可多选），自动识别台词 + AI 打标，之后当普通分镜用"
+                            Click="OnUploadUserSegment" />
+                    <Button x:Name="SelectionModeButton" Content="☑ 多选"
+                            Background="White"
+                            BorderBrush="{StaticResource BorderHoverBrush}"
+                            BorderThickness="1" Padding="10,3"
+                            FontSize="11" Cursor="Hand"
+                            Click="OnToggleSelectionMode" />
+                </StackPanel>
             </Grid>
 
             <Border x:Name="SelectionToolbar" Background="{StaticResource AccentBlueLightBrush}"
@@ -265,7 +275,7 @@
                                                    Stretch="UniformToFill" />
                                         </Border>
                                         <StackPanel VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding VideoName}"
+                                            <TextBlock Text="{Binding DisplayName}"
                                                        FontSize="13" FontWeight="SemiBold"
                                                        Foreground="{StaticResource TextPrimaryBrush}"
                                                        TextTrimming="CharacterEllipsis" MaxWidth="700" />
@@ -277,8 +287,10 @@
                                     </StackPanel>
                                 </Border>
                                 <!-- 配音设置条（v0.5.0，每视频独立）：状态区 + 变体数 stepper + 克隆并改写按钮。
-                                     左对齐（分镜 WrapPanel 会把组撑宽，右对齐内容会被推出可见区外）。 -->
-                                <Grid Margin="0,0,0,10" MinHeight="30" HorizontalAlignment="Left">
+                                     左对齐（分镜 WrapPanel 会把组撑宽，右对齐内容会被推出可见区外）。
+                                     #17：自建分镜组隐藏此条（每个自建分镜是独立载体、逐卡各自操作）。 -->
+                                <Grid Margin="0,0,0,10" MinHeight="30" HorizontalAlignment="Left"
+                                      Visibility="{Binding ShowDubBar, Converter={StaticResource BoolToVisibility}}">
                                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
                                         <!-- 主按钮 -->
                                         <Button Content="{Binding DubMainButtonText}" Command="{Binding RewriteAllCommand}"
@@ -375,6 +387,8 @@
                                     <MenuItem Header="📂 在 Explorer 中显示原视频"
                                               Command="{Binding PlacementTarget.Tag.ShowInExplorerCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                     <Separator />
+                                    <MenuItem Header="✂ 拆分分镜"
+                                              Command="{Binding PlacementTarget.Tag.SplitSegmentCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                     <MenuItem Header="🎬 分镜头替换"
                                               Command="{Binding PlacementTarget.Tag.ReplaceShotCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" />
                                     <MenuItem Header="♻ 删除替换画面（还原原画面）"

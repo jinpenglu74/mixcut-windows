@@ -45,6 +45,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         _vm.BoundaryPreviewRequested += OnBoundaryPreviewRequested;
         // #12：卡片右键「分镜头替换」→ VM 抛事件 → 这里开工作区窗口。
         _vm.ShotEditRequested += OnShotEditRequested;
+        // #18：卡片右键「拆分分镜」→ VM 抛事件 → 这里开拆分窗口。
+        _vm.SplitRequested += OnSplitRequested;
 
         Focusable = true;
         PreviewKeyDown += OnPreviewKeyDown;
@@ -64,6 +66,120 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         {
             Components.ToastService.Show(
                 "打开分镜头替换失败：" + ex.Message, Components.ToastStyle.Error);
+        }
+    }
+
+    /// <summary>
+    /// #17：上传自建分镜 —— 多选 mp4/mov（单条 ≤15s），逐个走「落盘→ASR→只打标」流水线，
+    /// 就绪后出现在分镜库置顶的「自建分镜」组。async void 事件处理器：全 body try/catch，异常不逃逸。
+    /// </summary>
+    private async void OnUploadUserSegment(object sender, RoutedEventArgs e)
+    {
+        if (_currentProject is null) return;
+        try
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog
+            {
+                Title = "选择成品分镜（单条 ≤15 秒，可多选）",
+                Filter = "视频文件 (*.mp4;*.mov)|*.mp4;*.mov|所有文件 (*.*)|*.*",
+                Multiselect = true,
+            };
+            if (dlg.ShowDialog() != true || dlg.FileNames.Length == 0) return;
+
+            var files = dlg.FileNames;
+            var projectId = _currentProject.Id;
+            var service = _services.GetRequiredService<Services.UserSegments.UserSegmentImportService>();
+
+            UploadUserSegmentButton.IsEnabled = false;
+            var okCount = 0;
+            var skipped = new List<string>();
+            for (var i = 0; i < files.Length; i++)
+            {
+                var fileName = System.IO.Path.GetFileName(files[i]);
+                Components.ToastService.Show(
+                    $"处理自建分镜 {i + 1}/{files.Length}：{fileName} …", Components.ToastStyle.Info);
+                var r = await service.ImportOneAsync(files[i], projectId);
+                if (r.Status == Services.UserSegments.UserSegmentImportStatus.Success)
+                {
+                    okCount++;
+                }
+                else
+                {
+                    skipped.Add($"{fileName}：{r.Message}");
+                }
+            }
+
+            // 刷新分镜库（绕过 LoadProject 的「同项目 return」守卫，直接重载 + 重建分组）。
+            var proj = _currentProject;
+            _vm.LoadSegments(proj);
+            _vm.RebuildGroups();
+            BuildTypeChips();
+            UpdateStats();
+            UpdateEmptyState();
+            // §F：广播失效 Overview/Schemes 等缓存（自建分镜计入分镜数）。
+            _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
+
+            var msg = okCount > 0 ? $"已上传 {okCount} 个自建分镜" : "没有成功上传的分镜";
+            if (skipped.Count > 0)
+            {
+                msg += $"，{skipped.Count} 个跳过（" + string.Join("；", skipped.Take(3)) +
+                       (skipped.Count > 3 ? " …" : string.Empty) + "）";
+            }
+            Components.ToastService.Show(msg,
+                okCount > 0 ? Components.ToastStyle.Success : Components.ToastStyle.Warning);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("上传自建分镜失败：" + ex.Message, Components.ToastStyle.Error);
+        }
+        finally
+        {
+            UploadUserSegmentButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>#18：拆分分镜 —— 前置拦截（已被方案引用则不允许）→ 帧级预览选点 → 切两段 + 重识别 → 刷新。</summary>
+    private async void OnSplitRequested(Segment segment)
+    {
+        try
+        {
+            // 前置拦截：已被方案组合引用的分镜禁止拆分（避免悬空引用）。
+            var refs = await _vm.CountSchemeReferencesAsync(segment.Id);
+            if (refs > 0)
+            {
+                Components.ToastService.Show(
+                    $"该分镜已被 {refs} 个方案使用，请先在方案里移除对它的使用再拆分",
+                    Components.ToastStyle.Warning);
+                return;
+            }
+
+            var ffmpeg = _services.GetRequiredService<Services.VideoProcessing.FFmpegRunner>();
+            var win = new SplitSegmentWindow(segment, ffmpeg) { Owner = Window.GetWindow(this) };
+            if (win.ShowDialog() != true) return;
+
+            Components.ToastService.Show("正在拆分并重新识别台词 …", Components.ToastStyle.Info);
+            var (ok, error) = await _vm.SplitSegmentAsync(segment.Id, win.CutFrame);
+            if (!ok)
+            {
+                Components.ToastService.Show(error ?? "拆分失败", Components.ToastStyle.Warning);
+                return;
+            }
+
+            // 刷新分镜库 + 广播失效缓存（§F）。
+            if (_currentProject is not null)
+            {
+                _vm.LoadSegments(_currentProject);
+                _vm.RebuildGroups();
+                BuildTypeChips();
+                UpdateStats();
+                UpdateEmptyState();
+                _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
+            }
+            Components.ToastService.Show("已拆分为两段分镜", Components.ToastStyle.Success);
+        }
+        catch (Exception ex)
+        {
+            Components.ToastService.Show("拆分失败：" + ex.Message, Components.ToastStyle.Error);
         }
     }
 

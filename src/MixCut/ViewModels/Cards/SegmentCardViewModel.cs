@@ -381,6 +381,10 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private async Task ReplaceShot() => await _host.RequestReplaceShotAsync(this);
 
+    /// <summary>#18：右键「拆分」→ 请求 host 打开拆分窗口。</summary>
+    [RelayCommand]
+    private void SplitSegment() => _host.RequestSplit(this);
+
     [RelayCommand]
     private async Task ToggleReplacedPicture()
     {
@@ -564,6 +568,9 @@ public interface ISegmentCardHost
 
     /// <summary>#12：打开「分镜头替换」工作区。</summary>
     Task RequestReplaceShotAsync(SegmentCardViewModel card);
+
+    /// <summary>#18：请求打开分镜拆分窗口（View 订阅后开窗）。</summary>
+    void RequestSplit(SegmentCardViewModel card);
     /// <summary>#12：在原画面 ↔ 替换画面间切换（已有替换画面时）。</summary>
     Task ToggleReplacedPictureAsync(SegmentCardViewModel card);
     /// <summary>#12：删除替换画面、还原为原画面。</summary>

@@ -44,6 +44,64 @@ public sealed class AIAnalysisService
         return result;
     }
 
+    /// <summary>
+    /// #17 只打标不切分：给定一个已切好的分镜的台词，只判定它的语义类型/位置/关键词（不切分、不给时间边界）。
+    /// 复用同一套语义类型定义。无 API Key / AI 失败由调用方兜底（给默认「过渡」占位）。
+    /// </summary>
+    public async Task<SegmentTagsResult> TagSingleSegmentAsync(
+        string text,
+        string? visualHint = null,
+        Action<string>? onProgress = null,
+        CancellationToken cancellationToken = default)
+    {
+        onProgress?.Invoke("正在构建打标 prompt...");
+        var prompt = BuildTagSinglePrompt(text, visualHint);
+
+        onProgress?.Invoke("正在等待 AI 打标...");
+        var provider = _providerManager.CurrentProvider();
+        var result = await provider.GenerateJsonAsync<SegmentTagsResult>(prompt, cancellationToken);
+
+        onProgress?.Invoke("打标完成");
+        _logger.LogInformation("[TagSingleDiag] 只打标完成 types={Types} pos={Pos}",
+            string.Join("/", result.EffectiveTypes), result.Position);
+        return result;
+    }
+
+    /// <summary>构建「只打标」prompt —— 复用语义类型定义，明确要求不切分、只回标签。</summary>
+    private string BuildTagSinglePrompt(string text, string? visualHint)
+    {
+        var segmentTypesDefinition = _promptLoader.LoadPrompt("segment_types_definition") ?? string.Empty;
+        var hintLine = string.IsNullOrWhiteSpace(visualHint) ? string.Empty : $"\n补充提示：{visualHint}\n";
+
+        return $@"你是广告混剪的分镜打标助手。下面是【一个已经切好的分镜】的台词。
+请**只判定它的语义类型、位置、关键词，绝对不要再切分、不要输出任何时间边界**。
+
+## 片段类型定义
+
+{segmentTypesDefinition}
+
+⚠️ types 是一个数组，每个元素必须是以下 11 个字符串之一（精确匹配）：
+""噱头引入""、""痛点""、""产品方案""、""效果展示""、""信任背书""、""价格对比""、""活动福利""、""行动号召""、""产品定位""、""产品使用教育""、""过渡""
+至少标注 1 个类型，通常 1-2 个，最多 3 个，第一个是主类型。
+
+## 位置类型
+
+position 必须是 ""开头""|""中间""|""结尾"" 之一（这段在整条广告里的位置）。
+自建分镜是单独上传的成品片段、无完整上下文，除非台词明显是开场白/结尾号召，否则给 ""中间""。
+
+## 分镜台词
+
+{text}
+{hintLine}
+## 输出格式（严格 JSON，只输出这一个对象，不要任何多余文字）
+
+{{
+  ""types"": [""<主类型>"", ""<可选次类型>""],
+  ""position"": ""<开头|中间|结尾>"",
+  ""keywords"": [""关键词1"", ""关键词2"", ""关键词3""]
+}}";
+    }
+
     /// <summary>构建切分 prompt —— 核心：本地数据驱动，AI 做语义决策。</summary>
     private string BuildSegmentationPrompt(
         string videoId,

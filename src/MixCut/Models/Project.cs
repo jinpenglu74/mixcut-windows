@@ -28,16 +28,27 @@ public class Project
 
     // ---- 计算属性（不映射到数据库）----
 
-    /// <summary>关联的视频列表。</summary>
+    /// <summary>关联的视频列表（含自建分镜载体，供内部引用/计数）。</summary>
     [NotMapped]
     public IEnumerable<Video> Videos =>
         ProjectVideos.Where(pv => pv.Video != null).Select(pv => pv.Video!);
 
-    /// <summary>视频总数。</summary>
+    /// <summary>
+    /// #17：对用户可见的「视频」列表 —— 排除自建分镜的载体视频（它们只在分镜库以分镜形态出现）。
+    /// 项目概览 / 导入页的「已导入视频」列表与计数一律走这个，避免自建分镜和成片视频混在一起。
+    /// </summary>
+    [NotMapped]
+    public IEnumerable<Video> VisibleVideos => Videos.Where(v => !v.IsUserUploaded);
+
+    /// <summary>视频总数（含自建载体，仅内部引用用；对用户展示请用 <see cref="VisibleVideoCount"/>）。</summary>
     [NotMapped]
     public int VideoCount => ProjectVideos.Count;
 
-    /// <summary>分镜总数。</summary>
+    /// <summary>对用户可见的视频数（排除自建分镜载体）。概览/导入页显示用。</summary>
+    [NotMapped]
+    public int VisibleVideoCount => VisibleVideos.Count();
+
+    /// <summary>分镜总数（自建分镜的整片分镜照常计入）。</summary>
     [NotMapped]
     public int SegmentCount => Videos.Sum(v => v.Segments.Count);
 

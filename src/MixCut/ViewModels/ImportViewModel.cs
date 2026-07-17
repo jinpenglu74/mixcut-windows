@@ -91,6 +91,9 @@ public partial class ImportViewModel : ObservableObject
     /// </summary>
     public event Action? SegmentsChanged;
 
+    /// <summary>#17：外部（自建分镜上传）新增/变更分镜后主动广播，失效 SegmentLibrary/Schemes/Overview 缓存（§F）。</summary>
+    public void NotifySegmentsChanged() => SegmentsChanged?.Invoke();
+
     /// <summary>
     /// 从 DB 拉取当前项目的视频列表（含 Segments）。
     /// UI 通过此方法获取最新数据，避免依赖 stale entity navigation。
@@ -103,7 +106,8 @@ public partial class ImportViewModel : ObservableObject
             return db.Projects
                 .Where(p => p.Id == projectId)
                 .SelectMany(p => p.ProjectVideos)
-                .Where(pv => pv.Video != null)
+                // #17：导入页只列成片视频，排除自建分镜载体（它们只在分镜库以分镜形态出现）。
+                .Where(pv => pv.Video != null && !pv.Video.IsUserUploaded)
                 .Include(pv => pv.Video!).ThenInclude(v => v.Segments)
                 .Select(pv => pv.Video!)
                 .OrderBy(v => v.CreatedAt)

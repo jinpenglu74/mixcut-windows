@@ -22,7 +22,27 @@ public sealed partial class VideoGroupViewModel : ObservableObject
     public string VideoName => Video.Name ?? "未命名视频";
 
     /// <summary>"3 个分镜 · 12s" 这种统计文本。</summary>
-    public string MetaText { get; }
+    public string MetaText { get; private set; }
+
+    /// <summary>#17：是否为「自建分镜」聚合组（多个载体视频合并、置顶、隐藏视频级配音条）。</summary>
+    public bool IsUserSegmentGroup { get; private set; }
+
+    /// <summary>组头显示名：自建分镜组固定「自建分镜」，普通组用视频名。</summary>
+    public string DisplayName => IsUserSegmentGroup ? "自建分镜" : VideoName;
+
+    /// <summary>是否显示视频级配音设置条（自建分镜组隐藏 —— 每个自建分镜是独立载体、逐卡各自操作）。</summary>
+    public bool ShowDubBar => !IsUserSegmentGroup;
+
+    /// <summary>
+    /// #17：构造「自建分镜」聚合组（carrier 仅用于缩略图占位；dubbing 传 null，不显示视频级配音条）。
+    /// </summary>
+    public static VideoGroupViewModel CreateUserSegmentGroup(Video carrier, IEnumerable<SegmentCardViewModel> cards)
+    {
+        var g = new VideoGroupViewModel(carrier, cards, dubbing: null);
+        g.IsUserSegmentGroup = true;
+        g.MetaText = $"{g.Segments.Count} 个自建分镜";
+        return g;
+    }
 
     public ImageSource? ThumbnailImage { get; }
 

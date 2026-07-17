@@ -42,54 +42,80 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     // ============ V2 数据装载 ============
 
-    /// <summary>切项目 / 筛选 / 排序变化时调用，重建 Groups。</summary>
-    public void RebuildGroups()
-    {
-        // 计算筛选后的分镜（FilteredSegments 已经按现有 ApplyFilter 维护）
-        var filtered = FilteredSegments.ToList();
+    /// <summary>#17：自建分镜（IsUserUploaded 载体视频）聚成一个置顶组；其余按视频分组。</summary>
+    private sealed record GroupSpec(Video Video, List<Segment> Segs, bool IsUserGroup);
 
-        // 按 Video 分组（保留视频出现顺序）
-        var groupsBuilt = new List<(Video Video, List<Segment> Segs)>();
+    /// <summary>把筛选后的分镜切成「自建分镜置顶组 + 各视频普通组」的规格列表。</summary>
+    private List<GroupSpec> BuildGroupSpecs(List<Segment> filtered)
+    {
+        var specs = new List<GroupSpec>();
+
+        // 自建分镜置顶（非空才产出；组内可含多个载体视频，合并成一组）。
+        var userSegs = filtered.Where(s => s.Video?.IsUserUploaded == true).ToList();
+        if (userSegs.Count > 0)
+        {
+            specs.Add(new GroupSpec(userSegs[0].Video!, userSegs, true));
+        }
+
+        // 其余普通分镜按视频分组（保留视频出现顺序）。
         var videoIndex = new Dictionary<Guid, int>();
         foreach (var seg in filtered)
         {
-            if (seg.Video is null) continue;
+            if (seg.Video is null || seg.Video.IsUserUploaded) continue;
             if (!videoIndex.TryGetValue(seg.Video.Id, out var idx))
             {
-                videoIndex[seg.Video.Id] = groupsBuilt.Count;
-                groupsBuilt.Add((seg.Video, new List<Segment> { seg }));
+                videoIndex[seg.Video.Id] = specs.Count;
+                specs.Add(new GroupSpec(seg.Video, new List<Segment> { seg }, false));
             }
             else
             {
-                groupsBuilt[idx].Segs.Add(seg);
+                specs[idx].Segs.Add(seg);
             }
         }
+        return specs;
+    }
 
-        // 复用现有 CardVM；创建新分组容器
-        var newGroups = new List<VideoGroupViewModel>(groupsBuilt.Count);
-        var newCardIds = new HashSet<Guid>();
-        foreach (var (video, segs) in groupsBuilt)
+    /// <summary>为一组分镜复用/创建 CardVM（同步多选 + 序号），用到的 id 记入 <paramref name="newCardIds"/>。</summary>
+    private List<SegmentCardViewModel> BuildCardsFor(List<Segment> segs, HashSet<Guid> newCardIds)
+    {
+        var cards = new List<SegmentCardViewModel>(segs.Count);
+        foreach (var seg in segs)
         {
-            var cards = new List<SegmentCardViewModel>(segs.Count);
-            foreach (var seg in segs)
+            newCardIds.Add(seg.Id);
+            if (!_cardIndex.TryGetValue(seg.Id, out var card))
             {
-                newCardIds.Add(seg.Id);
-                if (!_cardIndex.TryGetValue(seg.Id, out var card))
-                {
-                    card = new SegmentCardViewModel(seg, this);
-                    _cardIndex[seg.Id] = card;
-                }
-                else
-                {
-                    card.RefreshFromSegment();
-                }
-                // 同步多选 + 序号
-                card.IsSelectionMode = IsSelectionMode;
-                card.IsChecked = SelectedSegmentIds.Contains(seg.Id);
-                card.SequenceNumber = NumberFor(seg);
-                cards.Add(card);
+                card = new SegmentCardViewModel(seg, this);
+                _cardIndex[seg.Id] = card;
             }
-            newGroups.Add(new VideoGroupViewModel(video, cards, _dubbing));
+            else
+            {
+                card.RefreshFromSegment();
+            }
+            card.IsSelectionMode = IsSelectionMode;
+            card.IsChecked = SelectedSegmentIds.Contains(seg.Id);
+            card.SequenceNumber = NumberFor(seg);
+            cards.Add(card);
+        }
+        return cards;
+    }
+
+    private VideoGroupViewModel MakeGroup(GroupSpec spec, List<SegmentCardViewModel> cards)
+        => spec.IsUserGroup
+            ? VideoGroupViewModel.CreateUserSegmentGroup(spec.Video, cards)
+            : new VideoGroupViewModel(spec.Video, cards, _dubbing);
+
+    /// <summary>切项目 / 筛选 / 排序变化时调用，重建 Groups。</summary>
+    public void RebuildGroups()
+    {
+        var filtered = FilteredSegments.ToList();
+        var specs = BuildGroupSpecs(filtered);
+
+        // 复用现有 CardVM，按规格建组（自建分镜组置顶）。
+        var newGroups = new List<VideoGroupViewModel>(specs.Count);
+        var newCardIds = new HashSet<Guid>();
+        foreach (var spec in specs)
+        {
+            newGroups.Add(MakeGroup(spec, BuildCardsFor(spec.Segs, newCardIds)));
         }
 
         // 清理已不需要的 CardVM
@@ -163,21 +189,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     {
         var filtered = FilteredSegments.ToList();
 
-        var groupsBuilt = new List<(Video Video, List<Segment> Segs)>();
-        var videoIndex = new Dictionary<Guid, int>();
-        foreach (var seg in filtered)
-        {
-            if (seg.Video is null) continue;
-            if (!videoIndex.TryGetValue(seg.Video.Id, out var idx))
-            {
-                videoIndex[seg.Video.Id] = groupsBuilt.Count;
-                groupsBuilt.Add((seg.Video, new List<Segment> { seg }));
-            }
-            else
-            {
-                groupsBuilt[idx].Segs.Add(seg);
-            }
-        }
+        var specs = BuildGroupSpecs(filtered);
 
         // 清掉过时 CardVM
         var newCardIds = new HashSet<Guid>(filtered.Select(s => s.Id));
@@ -193,28 +205,11 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         await System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeAsync(
             () => { }, System.Windows.Threading.DispatcherPriority.Background);
 
-        // 逐组异步 Add，每加完一组 yield 让 WPF 渲染该组
-        foreach (var (video, segs) in groupsBuilt)
+        // 逐组异步 Add（自建分镜组置顶），每加完一组 yield 让 WPF 渲染该组
+        var sink = new HashSet<Guid>();
+        foreach (var spec in specs)
         {
-            var cards = new List<SegmentCardViewModel>(segs.Count);
-            foreach (var seg in segs)
-            {
-                if (!_cardIndex.TryGetValue(seg.Id, out var card))
-                {
-                    card = new SegmentCardViewModel(seg, this);
-                    _cardIndex[seg.Id] = card;
-                }
-                else
-                {
-                    card.RefreshFromSegment();
-                }
-                card.IsSelectionMode = IsSelectionMode;
-                card.IsChecked = SelectedSegmentIds.Contains(seg.Id);
-                card.SequenceNumber = NumberFor(seg);
-                cards.Add(card);
-            }
-            var group = new VideoGroupViewModel(video, cards, _dubbing);
-            Groups.Add(group);
+            Groups.Add(MakeGroup(spec, BuildCardsFor(spec.Segs, sink)));
 
             // 让 WPF 渲染该组卡片（Background 优先级 = 等渲染周期完）
             await System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeAsync(
@@ -387,6 +382,117 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         }
     }
 
+    // ============ #18 分镜拆分 ============
+
+    /// <summary>#18：查该分镜被多少个方案引用（&gt;0 时不允许拆分，避免悬空引用）。</summary>
+    public async Task<int> CountSchemeReferencesAsync(Guid segmentId)
+    {
+        await using var db = await _dbFactory.CreateDbContextAsync();
+        return await db.SchemeSegments.CountAsync(ss => ss.SegmentId == segmentId);
+    }
+
+    /// <summary>
+    /// #18 分镜拆分：把一个分镜按 <paramref name="cutFrame"/> 切成前后两段全新分镜。
+    /// A 复用原记录=[start,cut)，B 新建=[cut,end) 继承标签；原分镜配音/逐句字幕/画面替换全部清空（不可恢复）；
+    /// A、B 各自重抽首帧 + 各自阿里 paraformer 重识别台词。已被方案引用的分镜禁止拆分（双保险）。
+    /// </summary>
+    public async Task<(bool Ok, string? Error)> SplitSegmentAsync(Guid segmentId, int cutFrame, CancellationToken ct = default)
+    {
+        string? videoPath = null;
+        var aId = segmentId;
+        var bId = Guid.Empty;
+        double fps = 30.0;
+
+        await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+        {
+            var a = await db.Segments.Include(s => s.SchemeSegments)
+                .FirstOrDefaultAsync(s => s.Id == segmentId, ct);
+            if (a is null) return (false, "分镜不存在");
+            if (a.SchemeSegments.Count > 0)
+                return (false, $"该分镜已被 {a.SchemeSegments.Count} 个方案使用，请先在方案里移除对它的使用再拆分");
+
+            var video = await db.Videos.FirstOrDefaultAsync(v => v.Id == a.VideoId, ct);
+            videoPath = video?.LocalPath;
+            fps = a.EffectiveFps > 0 ? a.EffectiveFps : (video?.Fps > 0 ? video.Fps : 30.0);
+            var startFrame = a.StartFrame;
+            var endFrame = a.EndFrame;
+            if (cutFrame <= startFrame || cutFrame >= endFrame)
+                return (false, "拆分点无效（需落在分镜内部）");
+
+            // B 新建，继承 A 的语义标签（B 天然无衍生物）。
+            var b = new Segment
+            {
+                VideoId = a.VideoId,
+                SemanticTypesJson = a.SemanticTypesJson,
+                PositionType = a.PositionType,
+                KeywordsJson = a.KeywordsJson,
+                QualityScore = a.QualityScore,
+                QualityReasoning = a.QualityReasoning,
+            };
+            b.SetBoundsFrames(cutFrame, endFrame, fps);
+            bId = b.Id;
+
+            // A=[start,cut)，清空全部衍生物（A 内容变了，原衍生物失效、不可恢复）。
+            a.SetBoundsFrames(startFrame, cutFrame, fps);
+            var dubs = await db.SegmentDubs.Where(d => d.SegmentId == a.Id).ToListAsync(ct);
+            if (dubs.Count > 0) db.SegmentDubs.RemoveRange(dubs);                 // 含逐句字幕 CaptionLines
+            var shots = await db.PhysicalShots.Where(p => p.SegmentId == a.Id).ToListAsync(ct);
+            if (shots.Count > 0) db.PhysicalShots.RemoveRange(shots);            // 级联删 ShotVariants
+            a.InvalidateReplacedPicture();                                       // 清替换画面
+            a.ClonedVoiceId = null;
+            a.IsVoiceLocked = false;
+            a.HasHardSubtitle = false;
+            a.MaskRectJson = null;
+
+            db.Segments.Add(b);
+            await db.SaveChangesAsync(ct);
+        }
+
+        // A、B 各自重抽首帧缩略图（按新边界）。
+        if (!string.IsNullOrEmpty(videoPath))
+        {
+            await RethumbSplitAsync(aId, videoPath!, fps, ct);
+            await RethumbSplitAsync(bId, videoPath!, fps, ct);
+        }
+
+        // A、B 各自阿里 paraformer 重识别台词（按新边界；失败该段 text 留空、不回滚拆分）。
+        try { await _dubbing.ReRecognizeSegmentAsync(aId, ct); }
+        catch (Exception ex) { _logger.LogWarning(ex, "[SplitDiag] A 段重识别失败（text 留空）"); }
+        try { await _dubbing.ReRecognizeSegmentAsync(bId, ct); }
+        catch (Exception ex) { _logger.LogWarning(ex, "[SplitDiag] B 段重识别失败（text 留空）"); }
+
+        _logger.LogInformation("[SplitDiag] 拆分完成 A={A} B={B} cut={Cut}", aId, bId, cutFrame);
+        return (true, null);
+    }
+
+    /// <summary>拆分后按新 StartFrame 重抽首帧缩略图并写回 ThumbnailPath（文件名带帧号保证路径唯一→触发刷新）。</summary>
+    private async Task RethumbSplitAsync(Guid segId, string videoPath, double fps, CancellationToken ct)
+    {
+        try
+        {
+            if (_ffmpeg is null) return;
+            int startFrame;
+            await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+            {
+                var s = await db.Segments.FirstOrDefaultAsync(x => x.Id == segId, ct);
+                if (s is null) return;
+                startFrame = s.StartFrame;
+            }
+            var thumbDir = System.IO.Path.Combine(Utilities.AppPaths.Root, "Thumbnails");
+            System.IO.Directory.CreateDirectory(thumbDir);
+            var newPath = System.IO.Path.Combine(thumbDir, $"seg_{segId}_f{startFrame}.jpg");
+            var timeSec = Utilities.FrameTime.FrameToSeconds(startFrame, fps) + 0.05;
+            await _ffmpeg.GenerateThumbnailAsync(videoPath, newPath, timeSec, ct);
+            if (!System.IO.File.Exists(newPath)) return;
+            await using (var db = await _dbFactory.CreateDbContextAsync(ct))
+            {
+                var s = await db.Segments.FirstOrDefaultAsync(x => x.Id == segId, ct);
+                if (s is not null) { s.ThumbnailPath = newPath; await db.SaveChangesAsync(ct); }
+            }
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "[SplitDiag] 缩略图重抽失败 seg={Id}", segId); }
+    }
+
     void ISegmentCardHost.RequestDelete(SegmentCardViewModel card)
     {
         var result = MessageBox.Show(
@@ -530,6 +636,11 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
         ShotEditRequested?.Invoke(card.Segment);
         return Task.CompletedTask;
     }
+
+    /// <summary>#18：请求打开分镜拆分窗口（View 订阅后开窗，避免 VM 依赖 View）。</summary>
+    public event Action<Segment>? SplitRequested;
+
+    void ISegmentCardHost.RequestSplit(SegmentCardViewModel card) => SplitRequested?.Invoke(card.Segment);
 
     async Task ISegmentCardHost.ToggleReplacedPictureAsync(SegmentCardViewModel card)
     {

@@ -46,15 +46,16 @@ public partial class ProjectOverviewView : UserControl, IProjectView
         _currentProject = project;
         ProjectName.Text = project.Name;
         ProjectCreatedAt.Text = "创建于 " + project.CreatedAt.ToString("yyyy-MM-dd HH:mm");
-        VideoCount.Text = project.VideoCount.ToString();
+        // #17：概览的「视频」计数与列表排除自建分镜载体（它们只在分镜库以分镜形态出现）；分镜数照常含自建。
+        VideoCount.Text = project.VisibleVideoCount.ToString();
         SegmentCount.Text = project.SegmentCount.ToString();
         SchemeCount.Text = project.SchemeCount.ToString();
-        VideoCountBadge.Text = project.VideoCount.ToString();
+        VideoCountBadge.Text = project.VisibleVideoCount.ToString();
 
         ApplyStatusBadge(project.Status);
         ApplyActionButtonState(project);
 
-        if (project.VideoCount == 0)
+        if (project.VisibleVideoCount == 0)
         {
             EmptyState.Visibility = Visibility.Visible;
             VideoListSection.Visibility = Visibility.Collapsed;
@@ -68,7 +69,7 @@ public partial class ProjectOverviewView : UserControl, IProjectView
 
         Serilog.Log.Information(
             "[OverviewLoad] project={Pid} name=\"{Name}\" videos={V} segments={S} schemes={Sc}",
-            project.Id, project.Name, project.VideoCount,
+            project.Id, project.Name, project.VisibleVideoCount,
             project.SegmentCount, project.SchemeCount);
     }
 
@@ -84,7 +85,7 @@ public partial class ProjectOverviewView : UserControl, IProjectView
 
         // 按 Id 去重：同一视频可能被重复关联（ProjectVideos 有多条指向同一 Video 的行），
         // 去重后「卡片数 == videos.Count」，否则下面重排 Insert 会越界崩溃（v0.11.0 增量优化引入的回归）。
-        var videos = project.Videos
+        var videos = project.VisibleVideos
             .GroupBy(v => v.Id)
             .Select(g => g.First())
             .ToList();
