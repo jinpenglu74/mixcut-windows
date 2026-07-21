@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using MixCut.Infrastructure;
 using MixCut.Models;
@@ -481,6 +482,19 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
+        await RunSchemeBatchAsync(tasks, config, outputDir, skipped);
+    }
+
+    /// <summary>
+    /// 执行一批方案导出（并发调度 + 进度 + 结果面板）。
+    ///
+    /// 单独抽出来是为了支持「只重试失败的 N 个」—— 失败后可以拿失败子集再调一次本方法，
+    /// 而不必让用户把选方案、选目录、确认覆盖整个流程重走一遍（也避免把已成功的重复导一遍）。
+    /// </summary>
+    private async System.Threading.Tasks.Task RunSchemeBatchAsync(
+        List<(MixScheme Scheme, ExportInput Input, string OutputPath)> tasks,
+        ExportConfig config, string outputDir, int skipped = 0)
+    {
         // #14（对齐 macOS v0.7.x）：所有导出一律串行，concurrency 恒为 1（一条一条导，避免占满机器）。
         var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
         Serilog.Log.Information(
@@ -503,6 +517,8 @@ public partial class ExportView : UserControl, IProjectView
 
         var success = 0;
         var errors = new List<string>();
+        // 失败任务本身也要留下来，否则「只重试失败的」无从下手（原来只存了错误文案字符串）。
+        var failedTasks = new List<(MixScheme Scheme, ExportInput Input, string OutputPath)>();
         var completed = 0;
         var canceled = false;
         var currentTaskNames = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
@@ -530,7 +546,11 @@ public partial class ExportView : UserControl, IProjectView
             {
                 // 翻译成人话 + 可操作建议；原始 exit/stderr 已在 [ffmpeg-fail] 日志。
                 var friendly = Services.Export.ExportErrorMessage.ToFriendly(ex);
-                lock (errors) { errors.Add($"{task.Scheme.Name}: {friendly}"); }
+                lock (errors)
+                {
+                    errors.Add($"{task.Scheme.Name}: {friendly}");
+                    failedTasks.Add(task);
+                }
             }
             finally
             {
@@ -572,10 +592,9 @@ public partial class ExportView : UserControl, IProjectView
         }
         else
         {
-            ErrorPanel.Visibility = Visibility.Visible;
-            ErrorText.Text = $"成功 {success}/{tasks.Count} 个：\n"
-                             + string.Join("\n", errors.Take(5))
-                             + (errors.Count > 5 ? $"\n…还有 {errors.Count - 5} 个错误" : string.Empty);
+            ShowResultPanel(
+                success, tasks.Count, "个", errors, outputDir,
+                retry: failedTasks.Count == 0 ? null : () => RunSchemeBatchAsync(failedTasks, config, outputDir));
             Components.ToastService.Show(
                 success > 0
                     ? $"⚠ 部分失败：成功 {success}/{tasks.Count}"
@@ -602,6 +621,95 @@ public partial class ExportView : UserControl, IProjectView
                 ProgressDetailText.Text = string.IsNullOrEmpty(inProgress)
                     ? string.Empty : "进行中：" + inProgress;
             });
+        }
+    }
+
+    /// <summary>失败重试动作（由结果面板的「只重试失败的 N 个」按钮触发）。</summary>
+    private Func<System.Threading.Tasks.Task>? _retryFailedAction;
+
+    /// <summary>结果面板对应的输出目录（「打开输出目录」按钮用）。</summary>
+    private string? _resultOutputDir;
+
+    /// <summary>
+    /// 渲染导出结果面板（有失败时）。
+    ///
+    /// 标题按结果分级 —— 原本写死「导出失败」，5 个里成功 3 个也这么说，
+    /// 用户会以为一个都没出来，转头去重导全部（把已成功的又导一遍）。
+    /// </summary>
+    private void ShowResultPanel(
+        int success, int total, string unit, List<string> errors, string outputDir,
+        Func<System.Threading.Tasks.Task>? retry)
+    {
+        var partial = success > 0;
+        ErrorPanel.Visibility = Visibility.Visible;
+        ErrorPanel.Background = new SolidColorBrush(partial
+            ? Color.FromRgb(0xFD, 0xF3, 0xE2)      // 琥珀：部分完成
+            : Color.FromRgb(0xFD, 0xE2, 0xE2));    // 红：全失败
+        ErrorPanel.BorderBrush = new SolidColorBrush(partial
+            ? Color.FromRgb(0xF5, 0xD7, 0xA8) : Color.FromRgb(0xF5, 0xB7, 0xB7));
+        ErrorBadge.Background = new SolidColorBrush(partial
+            ? Color.FromRgb(0xC0, 0x6F, 0x00) : Color.FromRgb(0xD3, 0x3A, 0x3A));
+        ErrorBadgeIcon.Text = partial ? "!" : "✕";
+
+        var fore = new SolidColorBrush(partial
+            ? Color.FromRgb(0x7A, 0x58, 0x00) : Color.FromRgb(0xA1, 0x26, 0x26));
+        ErrorTitleText.Foreground = fore;
+        ErrorText.Foreground = fore;
+        RetryFailedButton.Foreground = fore;
+        RetryFailedButton.BorderBrush = fore;
+        OpenOutputAfterErrorButton.Foreground = fore;
+
+        var failedCount = total - success;
+        ErrorTitleText.Text = partial
+            ? $"部分完成：{success}/{total} {unit}已导出，{failedCount} {unit}失败"
+            : $"导出失败（{total} {unit}全部未完成）";
+        ErrorText.Text = string.Join("\n", errors.Take(5))
+                         + (errors.Count > 5 ? $"\n…还有 {errors.Count - 5} 个错误" : string.Empty);
+
+        _retryFailedAction = retry;
+        _resultOutputDir = outputDir;
+        RetryFailedButton.Content = $"只重试失败的 {failedCount} {unit}";
+        RetryFailedButton.Visibility = retry is null ? Visibility.Collapsed : Visibility.Visible;
+        // 成功过一部分才有必要给「打开输出目录」—— 全失败时目录里什么都没有。
+        OpenOutputAfterErrorButton.Visibility = partial ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private async void OnRetryFailedClick(object sender, RoutedEventArgs e)
+    {
+        var retry = _retryFailedAction;
+        if (retry is null || _isExporting) return;
+        _retryFailedAction = null;
+        ErrorPanel.Visibility = Visibility.Collapsed;
+        try
+        {
+            await retry();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "[ExportDiag] 重试失败任务时出错");
+            Components.ToastService.Show(
+                "重试没能开始：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex),
+                Components.ToastStyle.Error);
+        }
+    }
+
+    private void OnOpenOutputAfterErrorClick(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_resultOutputDir)) return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _resultOutputDir,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "[ExportDiag] 打开输出目录失败");
+            Components.ToastService.Show(
+                "打不开输出目录，你可以手动到这个位置查看：" + _resultOutputDir,
+                Components.ToastStyle.Warning);
         }
     }
 
@@ -692,6 +800,14 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
+        await RunDubBatchAsync(tasks, config, outputDir);
+    }
+
+    /// <summary>执行一批配音组合导出。抽出来同样是为了支持「只重试失败的 N 条」。</summary>
+    private async System.Threading.Tasks.Task RunDubBatchAsync(
+        List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)> tasks,
+        ExportConfig config, string outputDir)
+    {
         // #14（对齐 macOS v0.7.x）：配音组合导出同样一律串行，concurrency 恒为 1。
         var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
 
@@ -709,6 +825,7 @@ public partial class ExportView : UserControl, IProjectView
 
         var success = 0;
         var errors = new List<string>();
+        var failedTasks = new List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>();
         var completed = 0;
         var canceled = false;
         var current = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
@@ -729,7 +846,11 @@ public partial class ExportView : UserControl, IProjectView
             catch (Exception ex)
             {
                 // §红线：ex.Message 对 FFmpegException 含 "exit {code}: {stderr}"，绝不能直给用户 —— 翻成人话。
-                lock (errors) { errors.Add($"{task.Name}: {MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex)}"); }
+                lock (errors)
+                {
+                    errors.Add($"{task.Name}: {MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex)}");
+                    failedTasks.Add(task);
+                }
             }
             finally
             {
@@ -760,9 +881,9 @@ public partial class ExportView : UserControl, IProjectView
         }
         else
         {
-            ErrorPanel.Visibility = Visibility.Visible;
-            ErrorText.Text = $"成功 {success}/{tasks.Count} 条：\n" + string.Join("\n", errors.Take(5))
-                             + (errors.Count > 5 ? $"\n…还有 {errors.Count - 5} 个错误" : "");
+            ShowResultPanel(
+                success, tasks.Count, "条", errors, outputDir,
+                retry: failedTasks.Count == 0 ? null : () => RunDubBatchAsync(failedTasks, config, outputDir));
             Components.ToastService.Show(success > 0 ? $"⚠ 部分失败：成功 {success}/{tasks.Count}" : "配音导出全部失败",
                 success > 0 ? Components.ToastStyle.Warning : Components.ToastStyle.Error);
         }
