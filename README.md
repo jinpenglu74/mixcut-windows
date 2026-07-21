@@ -22,6 +22,20 @@
   <img src="docs/screenshots/library.png" width="900" alt="MixCut 分镜素材库" />
 </div>
 
+<div align="center">
+
+### 📺 完整演示视频
+
+<a href="https://www.bilibili.com/video/BV1Uz5i6pE6q/" target="_blank">
+  <img src="docs/screenshots/demo-video.jpg" width="720" alt="观看 MixCut 完整演示视频（哔哩哔哩）" />
+</a>
+
+**[▶ 点击观看完整演示 →](https://www.bilibili.com/video/BV1Uz5i6pE6q/)** · 约 45 分钟 · 哔哩哔哩
+
+> 演示录制于 macOS 版，Windows 版功能与操作流程完全一致。
+
+</div>
+
 ---
 
 ## 这是什么
@@ -93,13 +107,14 @@
 
 ## 🖥️ 界面一览
 
-| 项目概览 | 素材导入 |
+| 项目概览 | 分镜素材库 |
 |:---:|:---:|
-| <img src="docs/screenshots/overview.png" width="430" /> | <img src="docs/screenshots/import.png" width="430" /> |
-| **混剪方案** | **批量导出** |
-| <img src="docs/screenshots/schemes.png" width="430" /> | <img src="docs/screenshots/export.png" width="430" /> |
+| <img src="docs/screenshots/overview.png" width="430" /> | <img src="docs/screenshots/library.png" width="430" /> |
+| **混剪方案** | **分镜头 AI 画面替换** |
+| <img src="docs/screenshots/schemes.png" width="430" /> | <img src="docs/screenshots/shot-edit.png" width="430" /> |
 
 > 素材统一按 **9:16 竖屏**处理（面向手机端信息流广告）。
+> 界面截图取自 macOS 版，Windows 版布局与操作完全一致。
 
 ---
 
