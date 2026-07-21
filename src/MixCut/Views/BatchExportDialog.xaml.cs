@@ -176,9 +176,10 @@ public partial class BatchExportDialog : Window
         catch (Exception ex)
         {
             // §红线：ex.Message 对 FFmpegException 含 exit code / stderr 原文，翻成人话再展示。
-            System.Windows.MessageBox.Show(
-                $"批量导出失败：\n{MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex)}",
-                "MixCut", MessageBoxButton.OK, MessageBoxImage.Error);
+            MixCut.Views.Shared.MixCutDialog.Error(
+                this,
+                "批量导出失败",
+                MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex));
             DialogResult = false;
             Close();
         }

@@ -139,7 +139,7 @@ public partial class ExportView : UserControl, IProjectView
         NoSchemeHint.Visibility = hasAny ? Visibility.Collapsed : Visibility.Visible;
 
         // v0.6.0 起单方案导出区块移除（筛选导出已覆盖此场景：选 1 个等同于原「单方案导出」）。
-        // ExportAllButton.IsEnabled 由 UpdateExportButtonText 根据 _selectedSchemeIds 计数管理
+        // ExportButton.IsEnabled 由 UpdateExportButtonText 根据 _selectedSchemeIds 计数管理
     }
 
     // ---- 批量导出选择面板（v0.3.0：嵌入式策略 checkbox 列表 + 三态半选）----
@@ -316,49 +316,68 @@ public partial class ExportView : UserControl, IProjectView
         SelectedCountLabel.Text = $"已选 {_selectedSchemeIds.Count}/{total}";
     }
 
+    /// <summary>
+    /// 更新唯一导出按钮的文案 / 可用性 / 说明（对齐 macOS 单按钮设计）。
+    /// 条数 = 有配音改写版时按「原声 + 各改写版」排列组合的总条数；没有配音改写版时 = 选中方案数
+    /// （每个分镜只有「原声」1 档 → 组合数恒 1 → 每方案 1 条，正是原「普通导出」）。
+    /// </summary>
     private void UpdateExportButtonText()
     {
-        var n = _selectedSchemeIds.Count;
-        if (n == 0)
+        if (ExportButton is null) return;
+        var selected = _schemeVM.Schemes.Where(s => _selectedSchemeIds.Contains(s.Id)).ToList();
+        if (selected.Count == 0)
         {
-            ExportAllButton.Content = "请先选择方案";
-            ExportAllButton.IsEnabled = false;
+            ExportButton.Content = "请先选择方案";
+            ExportButton.IsEnabled = false;
+            ExportButton.ToolTip = "请先勾选要导出的方案";
+            if (ExportHintText is not null) ExportHintText.Text = string.Empty;
+            UpdateSelectedCountLabel();
+            return;
         }
-        else
+
+        var anyDub = HasDubVariants(selected);
+        var total = anyDub
+            ? selected.Sum(s => Math.Min(
+                Services.Dubbing.SchemeComboPlanner.FeasibleCount(s),
+                Services.Dubbing.SchemeComboPlanner.MaxCombos))
+            : selected.Count;
+
+        ExportButton.Content = $"📦  导出（共 {total} 条）";
+        ExportButton.IsEnabled = !_isExporting;   // #11：导出中不重启用（防重入）
+        ExportButton.ToolTip = anyDub
+            ? "按每个分镜的「原声 + 各改写版」全部排列组合，串行逐条生成差异化配音视频"
+            : "每个选中的方案导出 1 条成片（分镜用原声），串行逐条生成";
+        if (ExportHintText is not null)
         {
-            ExportAllButton.Content = $"📦  导出选中的 {n} 个";
-            ExportAllButton.IsEnabled = !_isExporting;   // #11：导出中不重启用（防重入）
+            ExportHintText.Text = anyDub
+                ? $"选中 {selected.Count} 个方案 · 检测到配音改写版，将按「原声 + 各改写版」排列组合生成 {total} 条差异化视频"
+                : $"选中 {selected.Count} 个方案 · 各生成 1 条成片（分镜用原声）；想要多条不同配音的版本，先去分镜库给分镜做配音改写";
         }
-        UpdateDubButtonText();
         UpdateSelectedCountLabel();
     }
 
-    /// <summary>配音组合导出按钮：N = 选中方案的组合数之和（每方案按 SchemeComboPlanner 上限封顶）。</summary>
-    private void UpdateDubButtonText()
+    /// <summary>选中方案里是否存在可参与组合的配音改写版（决定走组合导出还是普通导出）。</summary>
+    private static bool HasDubVariants(IEnumerable<MixScheme> selected) =>
+        selected.Any(s => s.OrderedSegments.Any(
+            ss => ss.Segment is { IsVoiceLocked: false } seg && seg.EffectiveDubVariants.Count > 0));
+
+    /// <summary>
+    /// 唯一导出入口（对齐 macOS 单按钮）：内部按「有没有配音改写版」分流到原有两条已验证的路径 ——
+    /// 有 → 配音组合导出（排列组合逐条出片）；没有 → 普通方案导出（每方案 1 条原声）。
+    /// 用户无需在两个按钮间选择；行为与原来各自的按钮完全一致。
+    /// </summary>
+    private async void OnExportClick(object sender, RoutedEventArgs e)
     {
-        if (ExportDubButton is null) return;
+        if (_isExporting) return;
         var selected = _schemeVM.Schemes.Where(s => _selectedSchemeIds.Contains(s.Id)).ToList();
-        var totalCombos = 0;
-        var anyDub = false;
-        foreach (var s in selected)
+        if (selected.Count == 0) return;
+        if (HasDubVariants(selected))
         {
-            var feasible = Services.Dubbing.SchemeComboPlanner.FeasibleCount(s);
-            totalCombos += Math.Min(feasible, Services.Dubbing.SchemeComboPlanner.MaxCombos);
-            // 该方案有可用配音变体（feasible > 分镜全锁定/无变体时的 1）→ 才算「有配音可导」
-            if (s.OrderedSegments.Any(ss => ss.Segment is { IsVoiceLocked: false } seg && seg.EffectiveDubVariants.Count > 0))
-            {
-                anyDub = true;
-            }
-        }
-        if (selected.Count == 0 || !anyDub)
-        {
-            ExportDubButton.Content = "🎤  导出配音组合";
-            ExportDubButton.IsEnabled = false;
+            await ExportDubCombosAsync();
         }
         else
         {
-            ExportDubButton.Content = $"🎤  导出配音组合（共 {totalCombos} 条）";
-            ExportDubButton.IsEnabled = !_isExporting;   // #11：导出中不重启用
+            await ExportSchemesAsync();
         }
     }
 
@@ -371,7 +390,8 @@ public partial class ExportView : UserControl, IProjectView
 
     // ---- 批量导出（v0.6.0 起单方案区块已删除，统一走筛选导出） ----
 
-    private async void OnExportAllClick(object sender, RoutedEventArgs e)
+    /// <summary>普通方案导出（每方案 1 条，分镜用原声）。由 <see cref="OnExportClick"/> 在无配音改写版时调用。</summary>
+    private async System.Threading.Tasks.Task ExportSchemesAsync()
     {
         // 防重入（权威守卫，不只靠按钮 IsEnabled）：正在导出（含被配音组合导出占用）时忽略，
         // 否则两批导出会共享并互相 Dispose 同一个 _exportCts，令在跑的 ffmpeg 撞 ObjectDisposedException 崩溃。
@@ -424,8 +444,11 @@ public partial class ExportView : UserControl, IProjectView
 
         if (tasks.Count == 0)
         {
-            MessageBox.Show("没有有效的方案可导出（视频文件可能丢失）",
-                "无法导出", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shared.MixCutDialog.Error(
+                Window.GetWindow(this),
+                "没有可导出的方案",
+                "选中的方案都用不了 —— 它们引用的视频文件已被移动、重命名或删除。\n\n"
+                + "请回到「素材导入」确认原始视频还在原位置，或重新导入素材后再生成方案。");
             return;
         }
 
@@ -446,10 +469,13 @@ public partial class ExportView : UserControl, IProjectView
             {
                 preview += $"\n…还有 {conflicts.Count - 5} 个";
             }
-            var confirm = MessageBox.Show(
-                $"以下 {conflicts.Count} 个文件已存在，继续导出会覆盖它们：\n\n{preview}\n\n确定要覆盖吗？",
-                "文件已存在", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-            if (confirm != MessageBoxResult.OK)
+            // 覆盖可能毁掉用户几小时的渲染成果 —— 按破坏性操作对待（红色主按钮 + 默认焦点在取消）。
+            var confirmed = Shared.MixCutDialog.Confirm(
+                Window.GetWindow(this),
+                $"覆盖已存在的 {conflicts.Count} 个文件？",
+                $"这些文件会被新导出的内容替换：\n\n{preview}",
+                confirmText: $"覆盖 {conflicts.Count} 个", cancelText: "取消", destructive: true, icon: "⚠");
+            if (!confirmed)
             {
                 return;
             }
@@ -466,8 +492,7 @@ public partial class ExportView : UserControl, IProjectView
         ErrorPanel.Visibility = Visibility.Collapsed;
         ProgressSection.Visibility = Visibility.Visible;
         ProgressTitle.Text = $"串行导出（共 {tasks.Count} 个 · 一条一条导）";
-        ExportAllButton.IsEnabled = false;
-        ExportDubButton.IsEnabled = false;   // 导出期间禁用配音组合按钮（双保险，与 OnExportDubCombosClick 对称）
+        ExportButton.IsEnabled = false;   // 导出期间禁用（防重入）
 
         // QW-11：每次导出新建取消令牌，「取消」按钮 / ESC 触发后整批 ffmpeg 立即收手。
         _exportCts?.Dispose();
@@ -530,7 +555,7 @@ public partial class ExportView : UserControl, IProjectView
         ProgressSection.Visibility = Visibility.Collapsed;
         CancelExportButton.IsEnabled = false;
         _isExporting = false;
-        UpdateExportButtonText(); // ExportAllButton 状态按当前选择数计算
+        UpdateExportButtonText(); // ExportButton 文案/状态按当前选择数计算
 
         if (canceled)
         {
@@ -593,7 +618,8 @@ public partial class ExportView : UserControl, IProjectView
 
     // ---- 配音组合导出（v0.5.0）：跨选中方案笛卡尔积展开成 N 条，逐条出片 ----
 
-    private async void OnExportDubCombosClick(object sender, RoutedEventArgs e)
+    /// <summary>配音组合导出（按「原声 + 各改写版」排列组合逐条出片）。由 <see cref="OnExportClick"/> 在有配音改写版时调用。</summary>
+    private async System.Threading.Tasks.Task ExportDubCombosAsync()
     {
         if (_isExporting) return;   // 防重入：与方案导出并发会互相 Dispose _exportCts 致崩（见 OnExportAllClick 注释）
         var snapshotIds = new HashSet<Guid>(_selectedSchemeIds);
@@ -619,17 +645,23 @@ public partial class ExportView : UserControl, IProjectView
 
         if (jobs.Count == 0)
         {
-            MessageBox.Show("没有可导出的配音组合（请先在分镜库「克隆并改写配音」生成变体）",
-                "无法导出", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shared.MixCutDialog.Error(
+                Window.GetWindow(this),
+                "还没有配音组合可以导出",
+                "选中的方案里没有任何配音变体，排列组合后为空。\n\n"
+                + "请先到「分镜库」选中分镜，用「克隆并改写配音」生成几版配音，再回到这里导出组合。");
             return;
         }
 
         // 确认弹窗（PRD §7.2）：先告知将生成多少条。
         var truncNote = truncatedSchemes > 0 ? $"\n（有 {truncatedSchemes} 个方案组合数超上限，已按每方案前 {Services.Dubbing.SchemeComboPlanner.MaxCombos} 条截取）" : "";
-        var confirm = MessageBox.Show(
-            $"将生成 {jobs.Count} 条视频\n\n选中 {schemes.Count} 个方案，画面不变，按每个分镜的「原声 + 各改写版」全部排列组合，串行逐条生成（一条一条导，避免占满机器）。{truncNote}",
-            "导出配音组合", MessageBoxButton.OKCancel, MessageBoxImage.Information);
-        if (confirm != MessageBoxResult.OK) return;
+        var confirmed = Shared.MixCutDialog.Confirm(
+            Window.GetWindow(this),
+            $"将从 {schemes.Count} 个方案生成 {jobs.Count} 条视频",
+            "画面保持不变，按每个分镜的「原声 + 各改写版」做全排列组合。\n"
+            + $"生成过程串行进行（一条一条导，不占满机器），期间可随时取消。{truncNote}",
+            confirmText: $"生成 {jobs.Count} 条", cancelText: "取消");
+        if (!confirmed) return;
 
         var dialog = new OpenFolderDialog { Title = "选择输出文件夹" };
         if (!string.IsNullOrEmpty(_settings.LastExportDirForSchemes) && Directory.Exists(_settings.LastExportDirForSchemes))
@@ -649,8 +681,12 @@ public partial class ExportView : UserControl, IProjectView
         {
             var preview = string.Join("\n", conflicts.Take(5).Select(c => "• " + Path.GetFileName(c.Item3)));
             if (conflicts.Count > 5) preview += $"\n…还有 {conflicts.Count - 5} 个";
-            if (MessageBox.Show($"以下 {conflicts.Count} 个文件已存在，继续会覆盖：\n\n{preview}\n\n确定覆盖吗？",
-                    "文件已存在", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            // 覆盖会毁掉之前的渲染成果 —— 按破坏性操作对待（红色主按钮 + 默认焦点在取消）。
+            if (!Shared.MixCutDialog.Confirm(
+                    Window.GetWindow(this),
+                    $"覆盖已存在的 {conflicts.Count} 个文件？",
+                    $"输出目录里已有同名文件，它们会被这次导出的内容替换：\n\n{preview}",
+                    confirmText: $"覆盖 {conflicts.Count} 个", cancelText: "取消", destructive: true, icon: "⚠"))
             {
                 return;
             }
@@ -663,8 +699,7 @@ public partial class ExportView : UserControl, IProjectView
         ErrorPanel.Visibility = Visibility.Collapsed;
         ProgressSection.Visibility = Visibility.Visible;
         ProgressTitle.Text = $"串行导出配音组合（共 {tasks.Count} 条 · 一条一条导）";
-        ExportAllButton.IsEnabled = false;
-        ExportDubButton.IsEnabled = false;
+        ExportButton.IsEnabled = false;   // 导出期间禁用（防重入）
 
         _exportCts?.Dispose();
         _exportCts = new CancellationTokenSource();

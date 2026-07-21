@@ -337,10 +337,12 @@ public sealed class CaptionTimingEditorWindow : Window
     private async void OnRealign()
     {
         if (_busyRealign) return;
-        var ok = MessageBox.Show(
-            "将用配音重新识别每句时间，覆盖你手动调过的时间。文本不变。\n\n确定重新对齐？",
-            "重新自动对齐", MessageBoxButton.OKCancel, MessageBoxImage.Question);
-        if (ok != MessageBoxResult.OK) return;
+        var ok = Shared.MixCutDialog.Confirm(
+            this,
+            "重新对齐会覆盖你手调的时间",
+            "系统会用配音音频重新识别每一句的起止时间，你手动调过的时间点将被覆盖。\n字幕文本不会改变。",
+            confirmText: "重新对齐", cancelText: "取消", destructive: true, icon: "⚠");
+        if (!ok) return;
         StopPlayback();
         _busyRealign = true;
         _lines = new List<CaptionLine>();

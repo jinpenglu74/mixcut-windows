@@ -11,6 +11,7 @@ using MixCut.Infrastructure;
 using MixCut.Services.AI;
 using MixCut.Services.ASR;
 using MixCut.Utilities;
+using MixCut.Views.Shared;
 
 namespace MixCut.Views;
 
@@ -169,7 +170,9 @@ public partial class SettingsWindow : Window
         {
             if (string.IsNullOrEmpty(_actualKey))
             {
-                MessageBox.Show("请输入 API Key", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                MixCutDialog.Alert(this, "请先填写 API Key",
+                    "保存前需要填入 API Key，否则无法调用 AI 生成方案。可在提供商的控制台复制后粘贴到上方输入框。",
+                    icon: "🔑");
                 return;
             }
             // 用户没改 key，但可能改了别的字段 → 保留原 key
@@ -178,13 +181,16 @@ public partial class SettingsWindow : Window
         if (provider == AIProviderType.Custom
             && (string.IsNullOrWhiteSpace(CustomUrlBox.Text) || string.IsNullOrWhiteSpace(CustomModelBox.Text)))
         {
-            MessageBox.Show("自定义提供商需要同时填写 API 地址和模型名称",
-                "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MixCutDialog.Alert(this, "自定义提供商还缺少必填项",
+                "使用自定义提供商时，API 地址和模型名称都要填写，MixCut 才知道把请求发到哪里、用哪个模型。",
+                icon: "🔑");
             return;
         }
         if (provider == AIProviderType.ClaudeRelay && string.IsNullOrWhiteSpace(RelayUrlBox.Text))
         {
-            MessageBox.Show("转发网关需要填写网关地址", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+            MixCutDialog.Alert(this, "请填写转发网关地址",
+                "选择「转发网关」时必须填入网关地址，MixCut 才能把 AI 请求转发出去。",
+                icon: "🔑");
             return;
         }
 
@@ -223,10 +229,11 @@ public partial class SettingsWindow : Window
     private void OnClearKey(object sender, RoutedEventArgs e)
     {
         var provider = CurrentProvider;
-        var confirm = MessageBox.Show(
-            $"确定要清除 {provider.DisplayName()} 的 API Key 吗？",
-            "确认", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.OK)
+        if (!MixCutDialog.Confirm(this,
+                $"清除 {provider.DisplayName()} 的 API Key？",
+                "清除后需要重新填写 Key 才能继续用该提供商生成方案，已保存的项目不受影响。",
+                confirmText: "清除 Key", cancelText: "保留",
+                destructive: true, icon: "🔑"))
         {
             return;
         }
@@ -343,8 +350,9 @@ public partial class SettingsWindow : Window
         btn.Click += (_, _) =>
         {
             _settings.HasCompletedOnboarding = false;
-            MessageBox.Show("已重置使用引导。下次启动 MixCut 时会再次显示。",
-                "MixCut", MessageBoxButton.OK, MessageBoxImage.Information);
+            MixCutDialog.Alert(this, "使用引导已重置",
+                "下次启动 MixCut 时会重新显示新手引导，带你走一遍完整流程。",
+                icon: "❓");
         };
         Grid.SetColumn(btn, 1);
         row.Children.Add(btn);
@@ -386,12 +394,11 @@ public partial class SettingsWindow : Window
                 btn.Content = "📋 导出诊断日志";
                 btn.IsEnabled = true;
 
-                var resp = MessageBox.Show(
-                    "诊断文件已保存到桌面：\n" + System.IO.Path.GetFileName(zipPath) + "\n\n" +
-                    "请通过侧边栏「微信」联系开发者，并把这个文件发过去，便于排查问题。\n\n" +
-                    "点「确定」在资源管理器中定位该文件。",
-                    "MixCut · 诊断日志已导出", MessageBoxButton.OKCancel, MessageBoxImage.Information);
-                if (resp == MessageBoxResult.OK)
+                if (MixCutDialog.Confirm(this,
+                        "诊断日志已导出到桌面",
+                        "文件名：" + System.IO.Path.GetFileName(zipPath) + "\n\n" +
+                        "请通过侧边栏「微信」联系开发者，并把这个文件发过去，便于排查问题。",
+                        confirmText: "在文件夹中显示", cancelText: "稍后再说", icon: "📋"))
                 {
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                     {
@@ -404,10 +411,9 @@ public partial class SettingsWindow : Window
                 btn.Content = "📋 导出诊断日志";
                 btn.IsEnabled = true;
                 Serilog.Log.Warning(ex, "[DiagnosticExport] 导出诊断日志失败");
-                MessageBox.Show(
-                    "导出诊断日志失败：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex) + "\n\n" +
-                    "可手动把以下文件夹里最新的 .log 发给开发者：\n" + Utilities.AppPaths.LogDirectory,
-                    "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MixCutDialog.Error(this, "诊断日志导出失败",
+                    MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex) + "\n\n" +
+                    "你也可以手动把下面这个文件夹里最新的 .log 文件发给开发者：\n" + Utilities.AppPaths.LogDirectory);
             }
         };
         Grid.SetColumn(btn, 1);
@@ -640,8 +646,9 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "[Settings] 打开数据目录失败");
-            MessageBox.Show("打开数据目录失败：" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex), "错误",
-                MessageBoxButton.OK, MessageBoxImage.Warning);
+            MixCutDialog.Error(this, "无法打开数据目录",
+                MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex) + "\n\n" +
+                "你可以复制下面这个路径手动在文件资源管理器中打开：\n" + AppPaths.Root);
         }
     }
 
@@ -659,15 +666,16 @@ public partial class SettingsWindow : Window
 
         if (PathEquals(toRoot, current))
         {
-            MessageBox.Show("所选位置就是当前数据目录，无需更改。", "MixCut",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            MixCutDialog.Alert(this, "所选位置就是当前数据目录",
+                "数据已经存放在这里了，无需迁移。想换到别的盘，请选择另一个位置。",
+                icon: "📁");
             return;
         }
         // 不允许选到当前数据目录里面（会把自己往自己里拷，死循环）。
         if (DataDirectoryMigrator.IsUnder(toRoot, current))
         {
-            MessageBox.Show("不能选择当前数据目录内部的文件夹，请换一个位置（建议选另一个盘的根目录，如 D:\\）。",
-                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MixCutDialog.Error(this, "不能选择当前数据目录里的文件夹",
+                "把数据搬到它自己内部会导致无限复制。请换一个位置，建议选另一个盘的根目录（例如 D:\\）。");
             return;
         }
 
@@ -681,8 +689,9 @@ public partial class SettingsWindow : Window
         var def = DataDirectoryMigrator.ComputeDefaultRoot();
         if (!AppPaths.IsCustomRoot || PathEquals(def, AppPaths.Root))
         {
-            MessageBox.Show("当前已经在默认位置，无需恢复。", "MixCut",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            MixCutDialog.Alert(this, "数据已在默认位置",
+                "当前数据目录就是系统默认位置，不需要恢复。",
+                icon: "📁");
             return;
         }
         StartMigrationTo(def, toIsDefault: true);
@@ -716,17 +725,21 @@ public partial class SettingsWindow : Window
         var free = DataDirectoryMigrator.GetDriveFreeBytes(toRoot);
         if (free >= 0 && free < (long)(bytes * 1.05))
         {
-            MessageBox.Show(
-                $"目标位置所在盘剩余空间不足。\n需要约 {FormatBytes(bytes)}，该盘仅剩 {FormatBytes(free)}。\n请清理空间或换一个盘。",
-                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MixCutDialog.Error(this, "目标磁盘空间不足，无法迁移",
+                $"这次迁移需要约 {FormatBytes(bytes)}，目标位置所在磁盘仅剩 {FormatBytes(free)}。\n\n" +
+                "请先清理该盘的空间，或改选一个剩余空间更充足的磁盘。");
             return;
         }
 
-        var confirm = MessageBox.Show(
-            $"将把约 {FormatBytes(bytes)} 数据迁移：\n\n从：{current}\n到：{toRoot}\n\n" +
-            "迁移会在下次启动时进行，期间请勿关机或断电（旧数据在迁移成功前不会删除）。\n\n现在重启并开始迁移？",
-            "更改数据存储位置", MessageBoxButton.OKCancel, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.OK) return;
+        if (!MixCutDialog.Confirm(this,
+                $"重启 MixCut 并迁移约 {FormatBytes(bytes)} 数据？",
+                $"从：{current}\n到：{toRoot}\n\n" +
+                "迁移会在重启后的启动阶段进行，期间请勿关机或断电。旧数据在迁移成功前不会删除。",
+                confirmText: "重启并迁移", cancelText: "暂不迁移",
+                destructive: true, icon: "💾"))
+        {
+            return;
+        }
 
         DataDirectoryMigrator.RequestMigration(current, toRoot, toIsDefault, pairs);
 
@@ -740,9 +753,9 @@ public partial class SettingsWindow : Window
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "[Settings] 迁移后自动重启失败");
-            MessageBox.Show("自动重启失败，请手动重新打开 MixCut 以完成迁移。\n"
-                + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex),
-                "MixCut", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MixCutDialog.Error(this, "自动重启失败，请手动重新打开 MixCut",
+                MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex) + "\n\n" +
+                "迁移任务已登记，下次手动启动 MixCut 时会自动继续，数据不会丢失。");
         }
         Application.Current.Shutdown();
     }

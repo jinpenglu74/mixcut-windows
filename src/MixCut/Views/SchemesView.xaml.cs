@@ -52,6 +52,11 @@ public partial class SchemesView : UserControl, IProjectView
 
     public void LoadProject(Project project)
     {
+        // 关掉选分镜抽屉：它持有 _drawerReplaceTarget / _drawerInsertPosition 这些指向**上一个项目**
+        // 的引用。不关的话，切项目后抽屉还开着、标题还是「选择新分镜替换」，点一下就会拿跨项目的
+        // 陈旧对象去做替换。CloseDrawer 是唯一会清这组状态的地方。
+        CloseDrawer();
+
         _project = project;
         _vm.LoadSchemes(project);
 
@@ -170,14 +175,34 @@ public partial class SchemesView : UserControl, IProjectView
 
             var friendly = TranslateGenerateError(ex);
             _vm.ErrorMessage = $"生成方案时出错：{friendly}";
+
+            // 「还没配 Key」不是故障，是缺一步配置 —— 单独走一条带去处的确认框，
+            // 让用户一键跳到设置，而不是读一段排查清单再自己去翻菜单。
+            var owner = Window.GetWindow(this);
+            if (ex is Services.AI.AIProviderException
+                { Kind: Services.AI.AIProviderErrorKind.ApiKeyNotConfigured })
+            {
+                if (Shared.MixCutDialog.Confirm(
+                        owner,
+                        "还没有配置 AI 模型的 API Key",
+                        "生成混剪方案需要调用 AI 模型，请先填入 API Key。\n\n"
+                        + "在「设置 → AI 模型」里填写后即可开始生成。",
+                        confirmText: "去设置", cancelText: "稍后", icon: "🔑"))
+                {
+                    (owner as MainWindow)?.OpenSettings();
+                }
+                return;
+            }
+
             // QW-1：不再把 C# stack trace / 异常类型 / 命名空间直接弹给用户（这是全项目唯一一处泄漏）。
             // 翻译成人话 + 给出可操作的下一步；完整 stack 已由上面的 Serilog.Log.Error 写盘。
-            MessageBox.Show(
-                $"生成方案失败。\n\n{friendly}\n\n建议操作：\n" +
-                "• 检查「设置 → API」中的 Key 是否有效\n" +
-                "• 检查网络连接是否正常\n" +
-                "• 如多次失败，请联系开发者并附上日志",
-                "方案生成失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            Shared.MixCutDialog.Error(
+                owner,
+                "方案生成失败",
+                $"{friendly}\n\n可以这样排查：\n" +
+                "• 到「设置 → API」确认 Key 是否有效、额度是否充足\n" +
+                "• 确认网络能正常访问 AI 服务\n" +
+                "• 如果反复失败，请联系开发者并附上应用日志");
         }
     }
 
@@ -582,10 +607,15 @@ public partial class SchemesView : UserControl, IProjectView
         {
             deleteItem.Click += (_, _) =>
             {
-                var confirm = MessageBox.Show(
-                    $"删除策略「{strategy.Name}」及其全部 {strategy.SchemeCount} 个变体？删除后可按 Ctrl+Z 撤销。",
-                    "确认", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-                if (confirm != MessageBoxResult.OK) return;
+                if (!Shared.MixCutDialog.Confirm(
+                        Window.GetWindow(this),
+                        $"删除策略「{strategy.Name}」及其 {strategy.SchemeCount} 个变体？",
+                        "该策略下的全部变体和方案分镜都会一并移除。\n删错了可以按 Ctrl+Z 撤销，或点提示条上的「撤销」。",
+                        confirmText: $"删除 {strategy.SchemeCount} 个变体", cancelText: "取消",
+                        destructive: true, icon: "⚠"))
+                {
+                    return;
+                }
                 var snapshot = _vm.DeleteStrategy(strategy);
                 RefreshStrategyList();
                 if (_vm.SelectedScheme is null)
@@ -707,9 +737,14 @@ public partial class SchemesView : UserControl, IProjectView
         var deleteItem = new MenuItem { Header = "🗑 删除变体", Tag = scheme };
         deleteItem.Click += (_, _) =>
         {
-            var confirm = MessageBox.Show($"删除变体「{scheme.Name}」？删除后可按 Ctrl+Z 撤销。",
-                "确认", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-            if (confirm != MessageBoxResult.OK) return;
+            if (!Shared.MixCutDialog.Confirm(
+                    Window.GetWindow(this),
+                    $"删除变体「{scheme.Name}」？",
+                    "该变体及其方案分镜会被移除。\n删错了可以按 Ctrl+Z 撤销，或点提示条上的「撤销」。",
+                    confirmText: "删除变体", cancelText: "取消", destructive: true, icon: "⚠"))
+            {
+                return;
+            }
             var snapshot = _vm.DeleteScheme(scheme);
             RefreshStrategyList();
             if (_vm.SelectedScheme is null)

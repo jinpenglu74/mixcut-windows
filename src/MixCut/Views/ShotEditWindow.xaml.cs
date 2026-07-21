@@ -594,10 +594,16 @@ public partial class ShotEditWindow : Window
             tip = "会发起一次新任务并按次计费";
             action = async () =>
             {
-                var confirm = MessageBox.Show(
-                    "重新生成会发起一次新任务并按次计费，确定吗？\n\n" + (v.FriendlyError ?? string.Empty),
-                    "重新生成（计费）", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-                if (confirm != MessageBoxResult.OK) return;
+                // 花钱的操作用系统灰框确认，等于在最需要信任感的时刻抽走信任感 —— 走自绘对话框。
+                var reason = string.IsNullOrWhiteSpace(v.FriendlyError)
+                    ? string.Empty
+                    : $"\n\n上次失败原因：{v.FriendlyError}";
+                var confirmed = Shared.MixCutDialog.Confirm(
+                    this,
+                    "重新生成这个画面变体？",
+                    $"会向 AI 发起一次新任务并按次计费（原任务的结果无法找回）。{reason}",
+                    confirmText: "生成并计费", cancelText: "暂不生成", destructive: false, icon: "💳");
+                if (!confirmed) return;
                 await _vm.RegenerateAsync(v.Id);
             };
         }

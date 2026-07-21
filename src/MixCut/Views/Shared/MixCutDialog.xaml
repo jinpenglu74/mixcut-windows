@@ -1,0 +1,49 @@
+<Window x:Class="MixCut.Views.Shared.MixCutDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ResizeMode="NoResize"
+        SizeToContent="Height" Width="440"
+        WindowStartupLocation="CenterOwner"
+        TextOptions.TextFormattingMode="Display" UseLayoutRounding="True">
+    <!-- Margin 给阴影留出绘制空间（AllowsTransparency 下阴影会被窗口边界裁掉） -->
+    <Border Background="{StaticResource BgPrimaryBrush}"
+            CornerRadius="{StaticResource CornerRadiusXl}"
+            Effect="{StaticResource ShadowLg}"
+            Margin="18" Padding="24,22,24,20">
+        <StackPanel>
+            <!-- 标题行：可选图标 + 标题 -->
+            <StackPanel x:Name="TitleRow" Orientation="Horizontal" Margin="{StaticResource GapMd}">
+                <!-- 图标放进圆形色底徽章：危险操作红底、其余蓝底。
+                     不裸放 emoji 的原因：像 🗑 (U+1F5D1) 这类字符在 Windows 上默认走单色字形，
+                     裸放就是个灰扑扑的黑白轮廓，既不醒目也不像「这一步很重要」。
+                     包一层彩色圆底后，危险语义由颜色承担，不再依赖字体给不给彩色字形。 -->
+                <Border x:Name="IconBadge" Width="30" Height="30" CornerRadius="15"
+                        Margin="{StaticResource GapInlineMd}"
+                        VerticalAlignment="Center" Visibility="Collapsed">
+                    <TextBlock x:Name="IconText" FontSize="15" FontFamily="Segoe UI Emoji"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" />
+                </Border>
+                <TextBlock x:Name="TitleText" Style="{StaticResource TitleTextStyle}"
+                           VerticalAlignment="Center" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!-- 正文 -->
+            <!-- 对话框正文承载「这一步会发生什么」，是全窗口最该读清的一行：
+                 用 13px 而不是通用的 11px 次要文字（440 宽对话框里 11px 明显偏小） -->
+            <TextBlock x:Name="MessageText" TextWrapping="Wrap"
+                       FontSize="{StaticResource FontSizeBodyLarge}"
+                       Foreground="{StaticResource TextSecondaryBrush}"
+                       Margin="{StaticResource GapXl}" LineHeight="21" />
+
+            <!-- 按钮区：次操作在左、主操作在右（对齐 Windows 惯例） -->
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CancelButton" Style="{StaticResource SecondaryButtonStyle}"
+                        MinWidth="88" Height="34" Margin="{StaticResource GapInlineMd}"
+                        IsCancel="True" Click="OnCancel" />
+                <Button x:Name="ConfirmButton" Style="{StaticResource PrimaryButtonStyle}"
+                        MinWidth="96" Height="34" Click="OnConfirm" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

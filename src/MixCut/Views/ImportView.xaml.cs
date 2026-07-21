@@ -255,10 +255,12 @@ public partial class ImportView : UserControl, IProjectView
         {
             return;
         }
-        var confirm = MessageBox.Show(
-            $"确定要删除视频「{row.Video.Name}」吗？\n视频文件和相关分镜数据都将被删除，此操作不可恢复。",
-            "确认删除", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-        if (confirm == MessageBoxResult.OK)
+        var confirm = Shared.MixCutDialog.Confirm(
+            Window.GetWindow(this),
+            $"删除视频「{row.Video.Name}」？",
+            "这条素材的视频文件、台词和已切好的分镜都会一起删除，此操作不可恢复。",
+            confirmText: "删除视频", cancelText: "取消", destructive: true, icon: "⚠");
+        if (confirm)
         {
             var name = row.Video.Name;
             _importVM.DeleteVideo(row.Video.Id, _project.Id);
@@ -376,10 +378,15 @@ public partial class ImportView : UserControl, IProjectView
     {
         if (sender is not Button button || button.Tag is not VideoRow row) return;
 
-        var confirm = MessageBox.Show(
-            $"重新识别「{row.Video.Name}」的台词？\n旧台词、分镜会被清除并重新生成。",
-            "重新识别 ASR", MessageBoxButton.OKCancel, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.OK) return;
+        if (!Shared.MixCutDialog.Confirm(
+                Window.GetWindow(this),
+                $"重新识别「{row.Video.Name}」的台词？",
+                "现有的台词和已切好的分镜会被清除，然后重新跑一遍语音识别与切分。\n"
+                + "你对这条素材做过的分镜微调会一并丢失，此操作不可撤销。",
+                confirmText: "重新识别", cancelText: "取消", destructive: true, icon: "⚠"))
+        {
+            return;
+        }
 
         Components.ToastService.Show("重新识别语音…", Components.ToastStyle.Info);
         button.IsEnabled = false;

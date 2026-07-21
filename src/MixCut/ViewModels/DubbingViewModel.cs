@@ -90,9 +90,46 @@ public sealed partial class DubbingViewModel : ObservableObject
     /// <summary>配音变体增删/生成后触发（用于失效 SegmentLibrary/Schemes/Export/Overview 缓存）。</summary>
     public event Action? DubsChanged;
 
-    /// <summary>给用户看的错误（人话，已翻译）。</summary>
+    /// <summary>
+    /// 给用户看的错误（人话，已翻译）。
+    ///
+    /// 本类有近 20 处 <c>ErrorMessage = "…"; return;</c> 作为唯一的失败反馈，
+    /// 而这个属性**从来没有被任何 XAML 绑定过** —— 结果就是：用户点「克隆并改写配音」，
+    /// Key 无效/欠费时转几秒、按钮弹回来、**屏幕上什么都不出现**，他只会以为软件坏了、再点一次。
+    /// 试听、导出变体等路径同样静默。
+    ///
+    /// 与其给每处失败补 UI，不如让"赋值即可见"：在 setter 里直接弹 Toast，
+    /// 一处改动封住全部失败路径，且以后新增的失败点自动获得反馈。
+    /// </summary>
     [ObservableProperty]
     private string? _errorMessage;
+
+    partial void OnErrorMessageChanged(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;   // 清空错误（开始新任务时）不该弹提示
+        }
+        try
+        {
+            // 可能从后台线程赋值 —— Toast 必须回 UI 线程。
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher is null || dispatcher.CheckAccess())
+            {
+                Views.Components.ToastService.Show(value, Views.Components.ToastStyle.Warning);
+            }
+            else
+            {
+                dispatcher.BeginInvoke(new Action(() =>
+                    Views.Components.ToastService.Show(value, Views.Components.ToastStyle.Warning)));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Toast 宿主未就绪（启动早期 / 自测路径）时不能让提示本身把流程带崩。
+            _logger.LogWarning(ex, "[DubDiag] 错误提示 Toast 弹出失败，仅记录: {Message}", value);
+        }
+    }
 
     public bool IsBusy(Guid? videoId)
     {
@@ -194,6 +231,54 @@ public sealed partial class DubbingViewModel : ObservableObject
         await using var db = await _dbFactory.CreateDbContextAsync();
         var v = await db.Videos.FirstOrDefaultAsync(v => v.Id == videoId);
         return !string.IsNullOrEmpty(v?.ClonedVoiceId);
+    }
+
+    /// <summary>
+    /// 批量版：一次查出多个视频的「是否已克隆 + 有效变体数」。
+    ///
+    /// 为什么需要它：分镜库每次重建分组（切项目 / 搜索 / 筛选 / 排序 / 删除后刷新）都会重建全部
+    /// 视频组，若每组各自调 <see cref="IsClonedAsync"/> + <see cref="EffectiveVariantCountAsync"/>，
+    /// 就是「视频数 × 2 次 SQL × 2 个 DbContext」。这里改成固定 2 次查询、1 个 DbContext。
+    /// 返回的字典对没有配音数据的视频也有条目（IsCloned=false, VariantCount=0），调用方不用判空。
+    /// </summary>
+    public async Task<Dictionary<Guid, Cards.VideoGroupViewModel.DubStatusSnapshot>> LoadDubStatusAsync(
+        IReadOnlyCollection<Guid> videoIds)
+    {
+        var result = new Dictionary<Guid, Cards.VideoGroupViewModel.DubStatusSnapshot>();
+        if (videoIds.Count == 0) return result;
+
+        await using var db = await _dbFactory.CreateDbContextAsync();
+
+        var cloned = await db.Videos.AsNoTracking()
+            .Where(v => videoIds.Contains(v.Id))
+            .Select(v => new { v.Id, v.ClonedVoiceId })
+            .ToListAsync();
+
+        var dubs = await db.SegmentDubs.AsNoTracking()
+            .Where(d => d.Segment != null && d.Segment.VideoId != null
+                        && videoIds.Contains(d.Segment.VideoId.Value) && d.AudioFilePath != null)
+            .Select(d => new { VideoId = d.Segment!.VideoId!.Value, d.SegmentId, d.TextVariantIndex })
+            .ToListAsync();
+
+        // 与单视频版口径保持一致：按 (分镜, 改写版) 去重后计数。
+        var counts = dubs
+            .GroupBy(d => d.VideoId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(d => (d.SegmentId, d.TextVariantIndex)).Distinct().Count());
+
+        var clonedSet = cloned
+            .Where(v => !string.IsNullOrEmpty(v.ClonedVoiceId))
+            .Select(v => v.Id)
+            .ToHashSet();
+
+        foreach (var id in videoIds)
+        {
+            result[id] = new Cards.VideoGroupViewModel.DubStatusSnapshot(
+                clonedSet.Contains(id),
+                counts.TryGetValue(id, out var n) ? n : 0);
+        }
+        return result;
     }
 
     /// <summary>读某分镜的全部配音变体（按改写版升序，供检视器展示）。脱离跟踪只读。</summary>

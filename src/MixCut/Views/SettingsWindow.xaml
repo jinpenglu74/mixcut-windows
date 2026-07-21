@@ -37,9 +37,10 @@
                             </Grid.ColumnDefinitions>
                             <TextBox Grid.Column="0" x:Name="ApiKeyBox" Padding="6,5"
                                      FontFamily="Consolas, Cascadia Mono, monospace" />
+                            <!-- Padding=0：隐式 Button 样式的 12,6 会把 32 宽按钮的内容区压到 8px，图标被压扁 -->
                             <Button Grid.Column="1" x:Name="ToggleVisibilityButton"
-                                    Width="32" Margin="6,0,0,0" Click="OnToggleVisibility"
-                                    Background="White" BorderBrush="#CCC"
+                                    Width="32" Padding="0" Margin="6,0,0,0" Click="OnToggleVisibility"
+                                    Background="White" BorderBrush="{StaticResource TextDisabledBrush}"
                                     ToolTip="显示/隐藏 API Key">
                                 <TextBlock x:Name="EyeIcon" Text="👁" FontSize="13" />
                             </Button>
