@@ -324,7 +324,11 @@ public partial class SettingsWindow : Window
         AddDiagnosticExportRow(AboutPanel);
         AddInfoRow(AboutPanel, "开发者", "MengGang");
         AddInfoRow(AboutPanel, "微信", "13462890087");
-        AddLinkRow(AboutPanel, "GitHub", "RoshanGH/mixed_cut", "https://github.com/RoshanGH/mixed_cut");
+        // 这里原本指向 RoshanGH/mixed_cut —— 那是 **macOS 版**仓库，
+        // Windows 用户点进去只能看到 dmg，下不到自己能用的版本。
+        AddLinkRow(AboutPanel, "下载 / 更新", "47.119.175.47/mixcut/", "http://47.119.175.47/mixcut/");
+        AddLinkRow(AboutPanel, "项目主页", "RoshanGH/mixcut-windows", "https://github.com/RoshanGH/mixcut-windows");
+        AddLinkRow(AboutPanel, "问题反馈", "提交 Issue", "https://github.com/RoshanGH/mixcut-windows/issues");
     }
 
     /// <summary>
@@ -437,7 +441,9 @@ public partial class SettingsWindow : Window
         Grid.SetColumn(nameTb, 0);
         DependencyGrid.Children.Add(nameTb);
 
-        var statusText = statusOverride ?? (available ? "✓ 已安装" : "✗ 未找到");
+        // 「已安装」对内置组件是个奇怪的说法（用户没装过它们，是随包带的）。
+        // 缺失才是异常情况，此时提示重装 —— 用户看到「✗ 未找到」也知道该怎么办。
+        var statusText = statusOverride ?? (available ? "✓ 已就绪" : "✗ 缺失（请重新安装 MixCut）");
         var color = available ? Color.FromRgb(0x2E, 0x8B, 0x57) : Color.FromRgb(0xD3, 0x3A, 0x3A);
         var statusTb = new TextBlock
         {
