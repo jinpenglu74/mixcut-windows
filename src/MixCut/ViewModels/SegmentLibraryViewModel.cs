@@ -38,6 +38,9 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
     private MixCutDbContext? _context;
     private readonly List<Segment> _segments = new();
 
+    /// <summary>当前项目的全部分镜（未经筛选）。空态要靠它区分「一个都没有」和「被筛选光了」。</summary>
+    public IReadOnlyList<Segment> AllSegments => _segments;
+
     /// <summary>筛选后的分镜列表。</summary>
     public ObservableCollection<Segment> FilteredSegments { get; } = new();
 

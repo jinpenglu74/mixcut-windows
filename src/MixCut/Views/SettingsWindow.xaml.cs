@@ -251,13 +251,17 @@ public partial class SettingsWindow : Window
         DependencyGrid.RowDefinitions.Clear();
         DependencyGrid.Children.Clear();
 
-        AddDependencyRow(0, "FFmpeg", BundledBinaries.FfmpegAvailable);
-        AddDependencyRow(1, "ffprobe", BundledBinaries.FfprobeAvailable);
-        AddDependencyRow(2, "whisper-cli", BundledBinaries.WhisperAvailable);
+        // 名称用「能力」而不是二进制文件名 —— 用户不需要知道 ffprobe 是什么，
+        // 他需要知道的是「视频处理能不能用」。缺失时的后果也写清楚。
+        AddDependencyRow(0, "视频处理引擎", BundledBinaries.FfmpegAvailable);
+        AddDependencyRow(1, "视频信息读取", BundledBinaries.FfprobeAvailable);
+        AddDependencyRow(2, "语音识别引擎", BundledBinaries.WhisperAvailable);
+        // demucs 之前没列出来 —— 它缺失时「AI 配音」会失败，用户在这页却看不出问题。
+        AddDependencyRow(3, "人声分离引擎", BundledBinaries.DemucsAvailable);
 
         var modelPath = FindWhisperModel();
-        AddDependencyRow(3, "语音模型", modelPath is not null,
-            modelPath is null ? "未下载" : "已就绪");
+        AddDependencyRow(4, "语音模型", modelPath is not null,
+            modelPath is null ? "未下载（首次分析时自动下载）" : "已就绪");
 
         // 模型下载横幅。
         if (modelPath is null)

@@ -24,16 +24,21 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     private readonly IServiceProvider _services;
     private Project? _currentProject;
 
+    /// <summary>空态「去导入素材」用的导航回调（由 MainWindow 注入）。</summary>
+    private readonly Action<NavigationItem>? _navigateTo;
+
     public SegmentLibraryViewV2(
         SegmentLibraryViewModel vm,
         Services.Export.VariantBatchExportService variantExport,
         Utilities.AppSettings settings,
-        IServiceProvider services)
+        IServiceProvider services,
+        Action<NavigationItem>? navigateTo = null)
     {
         _vm = vm;
         _variantExport = variantExport;
         _settings = settings;
         _services = services;
+        _navigateTo = navigateTo;
         InitializeComponent();
         DataContext = _vm;
 
@@ -625,6 +630,48 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         var isEmpty = _vm.FilteredSegments.Count == 0;
         EmptyState.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
         GroupsScroller.Visibility = isEmpty ? Visibility.Collapsed : Visibility.Visible;
+        if (!isEmpty) return;
+
+        // 空态必须区分三种处境，否则用户会误判。
+        // 真实反馈：一次导入多个视频，分析还没跑完就切过来，看到「没有符合条件的分镜」
+        // → 以为软件坏了。那时候其实只是还在分析。
+        var analyzing = _services.GetService<ImportViewModel>()?.IsProcessing == true;
+        var totalInProject = _vm.AllSegments.Count;
+
+        EmptyProgress.Visibility = analyzing ? Visibility.Visible : Visibility.Collapsed;
+        EmptyIcon.Visibility = analyzing ? Visibility.Collapsed : Visibility.Visible;
+
+        if (analyzing)
+        {
+            EmptyTitle.Text = "正在分析视频…";
+            EmptyHint.Text = "AI 正在切分镜头并标注类型，完成后分镜会自动出现在这里";
+            EmptyActionButton.Visibility = Visibility.Collapsed;
+        }
+        else if (totalInProject > 0)
+        {
+            EmptyTitle.Text = "没有符合当前筛选的分镜";
+            EmptyHint.Text = $"这个项目共有 {totalInProject} 个分镜，清空搜索或换个类型筛选就能看到";
+            EmptyActionButton.Content = "重置筛选";
+            EmptyActionButton.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            EmptyTitle.Text = "还没有分镜";
+            EmptyHint.Text = "导入视频并完成 AI 分析后，分镜会出现在这里";
+            EmptyActionButton.Content = "去导入素材";
+            EmptyActionButton.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void OnEmptyActionClick(object sender, RoutedEventArgs e)
+    {
+        // 有分镜但被筛没了 → 重置筛选；一个都没有 → 去导入。
+        if (_vm.AllSegments.Count > 0)
+        {
+            OnResetFilter(sender, e);
+            return;
+        }
+        _navigateTo?.Invoke(NavigationItem.ImportMedia);
     }
 
     // ============ 卡片事件 + 懒加载播放器 ============

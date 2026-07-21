@@ -21,16 +21,41 @@ public partial class ImportView : UserControl, IProjectView
     private Project? _project;
     private List<VideoRow> _rows = new();
 
-    public ImportView(ImportViewModel importVM, Action onChanged)
+    public ImportView(ImportViewModel importVM, Action onChanged, Action<NavigationItem>? navigateTo = null)
     {
         _importVM = importVM;
         _onChanged = onChanged;
+        _navigateTo = navigateTo;
         InitializeComponent();
         _importVM.PropertyChanged += OnImportVMChanged;
         _importVM.VideoProgressChanged += OnVideoProgressChanged;
         // 导入流程中每完成一个视频 commit DB 后 fire 此事件，立刻刷视频列表
         // （之前依赖 _project.Videos navigation，stale entity 拿不到新插入的视频）。
         _importVM.VideoListChanged += OnVideoListChanged;
+        _importVM.AnalysisCompleted += OnAnalysisCompleted;
+    }
+
+    private readonly Action<NavigationItem>? _navigateTo;
+
+    /// <summary>
+    /// 一批视频分析完成 → 报结果 + 给去处。
+    /// 用户反馈：分析跑完没有任何提示，切到分镜素材库看到空白就以为软件坏了。
+    /// </summary>
+    private void OnAnalysisCompleted(int videoCount, int segmentCount)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var msg = segmentCount > 0
+                ? $"{videoCount} 个视频分析完成，共 {segmentCount} 个分镜"
+                : $"{videoCount} 个视频已处理，但没有切出分镜";
+            Components.ToastService.Show(
+                msg,
+                segmentCount > 0 ? Components.ToastStyle.Success : Components.ToastStyle.Warning,
+                actionText: segmentCount > 0 && _navigateTo is not null ? "去分镜素材库" : null,
+                onAction: segmentCount > 0 && _navigateTo is not null
+                    ? () => _navigateTo(NavigationItem.SegmentLibrary)
+                    : null);
+        });
     }
 
     public void LoadProject(Project project)

@@ -202,10 +202,10 @@ public partial class MainWindow : Window
         FrameworkElement view = item switch
         {
             NavigationItem.Overview => new ProjectOverviewView(_vm, NavigateTo, RefreshAfterProjectChange),
-            NavigationItem.ImportMedia => new ImportView(_vm.ImportVM, RefreshAfterProjectChange),
+            NavigationItem.ImportMedia => new ImportView(_vm.ImportVM, RefreshAfterProjectChange, NavigateTo),
             // Feature flag：默认 V2（MVVM 数据驱动），失败时设 AppSettings.UseNewSegmentLibrary=false 回退 V1。
             NavigationItem.SegmentLibrary => _settings.UseNewSegmentLibrary
-                ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings, _services)
+                ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings, _services, NavigateTo)
                 : (FrameworkElement)new SegmentLibraryView(_vm.SegmentVM, _variantExportService, _settings),
             NavigationItem.Schemes => new SchemesView(_vm.SchemeVM, _vm.SegmentVM),
             NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings, NavigateTo),

@@ -95,6 +95,12 @@ public partial class ImportViewModel : ObservableObject
     public void NotifySegmentsChanged() => SegmentsChanged?.Invoke();
 
     /// <summary>
+    /// 一批视频全部分析完成（视频数, 该项目分镜总数）。View 据此提示结果并给出「去分镜素材库」入口。
+    /// 分析是长任务，跑完不出声等于让用户自己去猜有没有成功。
+    /// </summary>
+    public event Action<int, int>? AnalysisCompleted;
+
+    /// <summary>
     /// 从 DB 拉取当前项目的视频列表（含 Segments）。
     /// UI 通过此方法获取最新数据，避免依赖 stale entity navigation。
     /// </summary>
@@ -319,6 +325,23 @@ public partial class ImportViewModel : ObservableObject
 
             // 全部分析完成最后再触发一次，确保最终状态被刷到。
             SegmentsChanged?.Invoke();
+
+            // 主动告知结果并给出去处。
+            // 用户反馈：分析跑完后什么提示都没有，切到分镜素材库看到空白，以为软件坏了 ——
+            // 尤其一次导入多个视频时，进度条走完到分镜出现之间有明显空窗。
+            // 这里报「几个视频、共几个分镜」，并让 View 给出「去分镜素材库」的入口。
+            try
+            {
+                await using var db = await _dbFactory.CreateDbContextAsync();
+                var segCount = await db.Segments
+                    .CountAsync(s => s.Video != null
+                                     && s.Video.ProjectVideos.Any(pv => pv.ProjectId == projectId));
+                AnalysisCompleted?.Invoke(videosToAnalyze.Count, segCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "统计分镜总数失败，跳过完成提示");
+            }
         }
 
         SetProjectStatus(projectId, ProjectStatus.Ready);

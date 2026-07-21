@@ -263,12 +263,26 @@
             <StackPanel x:Name="EmptyState" Visibility="Collapsed"
                         DockPanel.Dock="Top"
                         HorizontalAlignment="Center" VerticalAlignment="Center">
-                <TextBlock Text="🎬" FontSize="40"
+                <!-- 空态必须分清三种处境，否则用户会误判：
+                     ① 正在分析 —— 之前这里显示「没有符合条件的分镜」，用户以为软件坏了（真实反馈）
+                     ② 一个分镜都没有 —— 该引导去导入
+                     ③ 被筛选条件过滤光了 —— 该引导去重置筛选 -->
+                <TextBlock x:Name="EmptyIcon" Text="🎬" FontSize="40"
                            Foreground="{StaticResource TextDisabledBrush}"
                            HorizontalAlignment="Center" />
-                <TextBlock Text="没有符合条件的分镜" FontSize="13"
-                           Foreground="{StaticResource TextTertiaryBrush}"
+                <TextBlock x:Name="EmptyTitle" Text="还没有分镜" FontSize="13" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextSecondaryBrush}"
                            HorizontalAlignment="Center" Margin="0,8,0,4" />
+                <TextBlock x:Name="EmptyHint" Text="导入视频并完成 AI 分析后，分镜会出现在这里"
+                           FontSize="12" TextAlignment="Center"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           HorizontalAlignment="Center" Margin="0,0,0,10" />
+                <ProgressBar x:Name="EmptyProgress" IsIndeterminate="True" Width="120" Height="4"
+                             Visibility="Collapsed" Margin="0,0,0,10" />
+                <Button x:Name="EmptyActionButton" Content="去导入素材"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        HorizontalAlignment="Center" Padding="14,6"
+                        Visibility="Collapsed" Click="OnEmptyActionClick" />
             </StackPanel>
 
             <!-- 外层：按视频分组（对齐 Mac 版）。每组 = 视频 header + 该组分镜 WrapPanel（LastChildFill 填剩余） -->
