@@ -41,9 +41,8 @@
 
 | 渠道 | 链接 | 说明 |
 |------|------|------|
-| **下载页（推荐）** | [**47.119.175.47/mixcut/**](http://47.119.175.47/mixcut/) | 国内直连，macOS / Windows 都在这里 |
-| GitHub Releases | [Releases](https://github.com/RoshanGH/mixcut-windows/releases) | 版本说明与更新日志 |
-| Gitee（国内镜像） | [Releases](https://gitee.com/jinxiushanhehao/mixcut-windows/releases) | |
+| **GitHub Releases** | [**下载最新版 →**](https://github.com/RoshanGH/mixcut-windows/releases/latest) | 版本说明与更新日志都在这里 |
+| Gitee（国内镜像） | [Releases](https://gitee.com/jinxiushanhehao/mixcut-windows/releases) | 国内访问更快 |
 
 下载 `MixCut-Setup-vX.Y.Z-win-x64.exe` → 双击 → 一路下一步 → 完成即用。**无需管理员权限**。
 
@@ -105,7 +104,7 @@
 
 ## 🚀 快速开始
 
-**1. 安装** —— 从[下载页](http://47.119.175.47/mixcut/)拿安装包，双击装完即用。
+**1. 安装** —— 从 [Releases](https://github.com/RoshanGH/mixcut-windows/releases/latest) 下载安装包，双击装完即用。
 
 **2. 填 API Key** —— 打开「设置 → AI 模型」：
 

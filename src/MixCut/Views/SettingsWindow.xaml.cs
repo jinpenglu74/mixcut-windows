@@ -326,9 +326,12 @@ public partial class SettingsWindow : Window
         AddInfoRow(AboutPanel, "微信", "13462890087");
         // 这里原本指向 RoshanGH/mixed_cut —— 那是 **macOS 版**仓库，
         // Windows 用户点进去只能看到 dmg，下不到自己能用的版本。
-        AddLinkRow(AboutPanel, "下载 / 更新", "47.119.175.47/mixcut/", "http://47.119.175.47/mixcut/");
-        AddLinkRow(AboutPanel, "项目主页", "RoshanGH/mixcut-windows", "https://github.com/RoshanGH/mixcut-windows");
-        AddLinkRow(AboutPanel, "问题反馈", "提交 Issue", "https://github.com/RoshanGH/mixcut-windows/issues");
+        AddLinkRow(AboutPanel, "下载 / 更新", "GitHub Releases",
+            "https://github.com/RoshanGH/mixcut-windows/releases/latest");
+        AddLinkRow(AboutPanel, "项目主页", "RoshanGH/mixcut-windows",
+            "https://github.com/RoshanGH/mixcut-windows");
+        AddLinkRow(AboutPanel, "问题反馈", "提交 Issue",
+            "https://github.com/RoshanGH/mixcut-windows/issues");
     }
 
     /// <summary>
