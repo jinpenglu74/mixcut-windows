@@ -126,6 +126,7 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
     /// <summary>切项目 / 筛选 / 排序变化时调用，重建 Groups。</summary>
     public void RebuildGroups()
     {
+        var rebuildSw = System.Diagnostics.Stopwatch.StartNew();
         var filtered = FilteredSegments.ToList();
         var specs = BuildGroupSpecs(filtered);
 
@@ -161,8 +162,17 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
         var totalCards = newGroups.Sum(g => g.Segments.Count);
         Serilog.Log.Information(
-            "[GroupDiag] groups={GroupCount} totalCards={Total} sortByQuality={SQ}",
-            newGroups.Count, totalCards, SortByQuality);
+            "[GroupDiag] groups={GroupCount} totalCards={Total} sortByQuality={SQ} VM构建={Ms}ms",
+            newGroups.Count, totalCards, SortByQuality, rebuildSw.ElapsedMilliseconds);
+
+        // 真正的开销在 WPF 把这些 VM 展开成控件树（单卡约 250~400 个可视元素），
+        // 发生在本方法返回之后的布局阶段 —— 用 Loaded 优先级的回调量到「可交互」为止。
+        // 这个数字是判断「该不该继续给卡片减重」的唯一依据。
+        var uiSw = System.Diagnostics.Stopwatch.StartNew();
+        System.Windows.Application.Current?.Dispatcher.BeginInvoke(
+            new Action(() => Serilog.Log.Information(
+                "[GroupDiag] 渲染就绪 cards={Total} 界面构建={Ms}ms", totalCards, uiSw.ElapsedMilliseconds)),
+            System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     /// <summary>一次查出所有组的配音状态并灌进各组（替代「每组各查两次」）。</summary>
