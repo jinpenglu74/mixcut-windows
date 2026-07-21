@@ -12,6 +12,7 @@
 [![Platform](https://img.shields.io/badge/Windows-10%2F11%20x64-0078D4?logo=windows)](#-下载)
 [![.NET](https://img.shields.io/badge/.NET-8.0%20WPF-512BD4?logo=dotnet)](#-技术架构)
 [![Stars](https://img.shields.io/github/stars/RoshanGH/mixcut-windows?style=flat&color=E3B341)](https://github.com/RoshanGH/mixcut-windows/stargazers)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 
 [**⬇️ 下载**](#-下载) · [**✨ 功能**](#-功能亮点) · [**🚀 快速开始**](#-快速开始) · [**🛠 技术架构**](#-技术架构) · [**🍎 macOS 版**](https://github.com/RoshanGH/mixed_cut)
 
@@ -190,4 +191,6 @@ dotnet build src\MixCut\MixCut.csproj -c Release -nodeReuse:false -p:UseSharedCo
 
 ## License
 
-暂未开源授权（保留所有权利）。如需商用或二次开发请先联系作者。
+[MIT License](./LICENSE) © MengGang
+
+可自由使用、修改、分发与商用，保留版权声明即可。
