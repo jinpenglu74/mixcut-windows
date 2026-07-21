@@ -39,8 +39,18 @@ public static class DiagnosticExport
                     .GetFiles("*.log").OrderByDescending(f => f.LastWriteTime).Take(3);
                 foreach (var f in logs)
                 {
-                    try { File.Copy(f.FullName, Path.Combine(staging, f.Name), overwrite: true); }
-                    catch { /* 单个日志拷贝失败不阻断整体导出 */ }
+                    try
+                    {
+                        // 第二道防线：不直接拷贝，逐行脱敏后再写入。
+                        // 这个 zip 会被用户发给开发者/客服 —— 万一某个 API 网关的错误响应体里回显了
+                        // Authorization 头（含用户的付费密钥）并进了日志，直接拷贝就等于把密钥交出去。
+                        // 各客户端写日志时已经脱敏一次，这里再兜一次底，防止将来新增的日志点漏掉。
+                        var sanitized = Services.AI.LogSanitizer.Redact(
+                            await File.ReadAllTextAsync(f.FullName, Encoding.UTF8));
+                        await File.WriteAllTextAsync(
+                            Path.Combine(staging, f.Name), sanitized, Encoding.UTF8);
+                    }
+                    catch { /* 单个日志处理失败不阻断整体导出 */ }
                 }
             }
 
@@ -95,6 +105,9 @@ public static class DiagnosticExport
             };
             using var p = Process.Start(psi);
             if (p is null) { return "(无法启动)"; }
+            // 铁律：所有 Process.Start 都挂 Job Object，主进程死时子进程一起死。
+            // 全项目 12 处 Process.Start 里只有这处漏了（虽有超时兜底，但一致性不能破）。
+            ChildProcessTracker.AddProcess(p);
             var outTask = p.StandardOutput.ReadToEndAsync();
             var errTask = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(timeoutMs))

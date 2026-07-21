@@ -88,13 +88,54 @@ public sealed class ExportService
         _logger = logger;
     }
 
-    /// <summary>导出混剪方案为 MP4。</summary>
+    /// <summary>
+    /// 导出混剪方案为 MP4。
+    ///
+    /// 失败或取消时会**删除写了一半的输出文件**：ffmpeg 中途被杀留下的 mp4 通常仍能双击打开、
+    /// 只是内容截断，混在一批成品里用户根本分不出哪个是坏的（批量导出 20 条中途取消尤其致命）。
+    /// 宁可什么都没有，也不能留一个看起来正常的残次品。
+    /// </summary>
     public async Task ExportAsync(
         ExportInput input,
         string outputPath,
         ExportConfig? config = null,
         Action<ExportProgress>? onProgress = null,
         CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await ExportCoreAsync(input, outputPath, config, onProgress, cancellationToken);
+        }
+        catch
+        {
+            DeleteIncompleteOutput(outputPath);
+            throw;
+        }
+    }
+
+    /// <summary>删除失败/取消留下的半成品输出。删不掉只记日志，不能因此覆盖原始失败原因。</summary>
+    private void DeleteIncompleteOutput(string outputPath)
+    {
+        try
+        {
+            if (File.Exists(outputPath))
+            {
+                File.Delete(outputPath);
+                _logger.LogInformation("[ExportCleanup] 已删除未完成的输出文件: {Output}", outputPath);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ExportCleanup] 删除半成品失败（文件可能被占用）: {Output}", outputPath);
+        }
+    }
+
+    private async Task ExportCoreAsync(
+        ExportInput input,
+        string outputPath,
+        ExportConfig? config,
+        Action<ExportProgress>? onProgress,
+        CancellationToken cancellationToken)
     {
         config ??= new ExportConfig();
 

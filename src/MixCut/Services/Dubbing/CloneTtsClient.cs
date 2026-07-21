@@ -115,5 +115,6 @@ public sealed class CloneTtsClient
         try { if (File.Exists(path)) File.Delete(path); } catch { /* 忽略临时 wav 清理失败 */ }
     }
 
-    private static string Trunc(string s) => s.Length <= 300 ? s : s[..300];
+    /// <summary>截断 + **脱敏**（错误响应体可能回显含密钥的 Authorization 头）。见 <see cref="AI.LogSanitizer"/>。</summary>
+    private static string Trunc(string s) => AI.LogSanitizer.Safe(s, 300);
 }

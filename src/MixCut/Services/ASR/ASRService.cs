@@ -480,9 +480,24 @@ public sealed class ASRService
         const int maxAttemptsPerUrl = 3;
         Exception? lastError = null;
 
+        var isFirstSource = true;
         foreach (var url in urls)
         {
             var source = url.Contains("hf-mirror", StringComparison.Ordinal) ? "国内镜像" : "HuggingFace";
+
+            // 换源时丢弃上一个源的半成品：续传的 Range 起点是按 tempPath 长度算的，
+            // 拿着「从 HuggingFace 下到 300MB」的偏移去问镜像站要后续字节，等于假设两边字节完全一致。
+            // 同名模型通常一致，但这是无保障的假设 —— 一旦镜像版本不同就是静默拼接出一个损坏文件。
+            if (!isFirstSource && File.Exists(tempPath))
+            {
+                try
+                {
+                    File.Delete(tempPath);
+                    _logger.LogInformation("换源重下，已丢弃上一个源的半成品文件");
+                }
+                catch (Exception ex) { _logger.LogWarning(ex, "删除半成品失败，忽略"); }
+            }
+            isFirstSource = false;
 
             for (var attempt = 1; attempt <= maxAttemptsPerUrl; attempt++)
             {
@@ -503,6 +518,10 @@ public sealed class ASRService
                     using var response = await http.SendAsync(
                         request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
+                    // 声明必须在下面的 goto Finalize 之前：跳转会跳过声明语句，
+                    // 而 Finalize 处要用 total 做完整性校验（`total > 0` 才比对，0 表示「无从比对」）。
+                    long total = 0;
+
                     // 416 表示 Range 不可满足（文件已完整）→ 当作完成。
                     if (response.StatusCode == System.Net.HttpStatusCode.RequestedRangeNotSatisfiable
                         && resumeFrom > 0)
@@ -514,7 +533,6 @@ public sealed class ASRService
 
                     var isResume = response.StatusCode == System.Net.HttpStatusCode.PartialContent
                                    && resumeFrom > 0;
-                    long total;
                     if (isResume && response.Content.Headers.ContentRange?.Length is long rangeTotal)
                     {
                         total = rangeTotal;
@@ -553,6 +571,20 @@ public sealed class ASRService
                     }
 
                 Finalize:
+                    // 完整性校验（关键）：ReadAsync 返回 0 只代表「流结束了」，**不代表下载完整**。
+                    // 国内网络下中间设备经常把连接干净地关掉（服务端 FIN / chunked 截断），
+                    // 此时循环正常退出、不抛异常，一个残缺文件就会被 Move 成正式模型 —— 之后
+                    // FindModel 永远命中它、IsModelAvailable 返回 true、依赖徽章熄灭、设置页显示「已就绪」，
+                    // 但每次 ASR 都失败，而且「重新下载」也会因为开头的 FindModel 短路而无效。
+                    // 用户唯一的出路是手动去 whisper-models 目录删文件 —— 这是不可接受的死局。
+                    // 这里长度不符就当失败抛出，交给外层的多源重试（tempPath 保留供续传）。
+                    var downloadedLength = new FileInfo(tempPath).Length;
+                    if (total > 0 && downloadedLength != total)
+                    {
+                        throw new IOException(
+                            $"模型下载不完整（已收到 {downloadedLength / 1024 / 1024} MB，应为 {total / 1024 / 1024} MB），可能是网络中断。");
+                    }
+
                     if (File.Exists(destPath))
                     {
                         File.Delete(destPath);

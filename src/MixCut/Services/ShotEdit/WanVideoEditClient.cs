@@ -200,5 +200,7 @@ public sealed class WanVideoEditClient
             ? "https://" + url["http://".Length..]
             : url;
 
-    private static string Trunc(string s) => s.Length <= 300 ? s : s[..300];
+    /// <summary>截断 + **脱敏**：DashScope 网关的错误响应体可能回显 Authorization 头（含用户密钥），
+    /// 而日志会被「导出诊断包」打包发给开发者。见 <see cref="AI.LogSanitizer"/>。</summary>
+    private static string Trunc(string s) => AI.LogSanitizer.Safe(s, 300);
 }
