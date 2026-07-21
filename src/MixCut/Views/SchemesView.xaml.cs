@@ -194,30 +194,30 @@ public partial class SchemesView : UserControl, IProjectView
                 return;
             }
 
-            // QW-1：不再把 C# stack trace / 异常类型 / 命名空间直接弹给用户（这是全项目唯一一处泄漏）。
+            // QW-1：不再把 C# stack trace / 异常类型 / 命名空间直接弹给用户。
             // 翻译成人话 + 给出可操作的下一步；完整 stack 已由上面的 Serilog.Log.Error 写盘。
-            Shared.MixCutDialog.Error(
-                owner,
-                "方案生成失败",
-                $"{friendly}\n\n可以这样排查：\n" +
-                "• 到「设置 → API」确认 Key 是否有效、额度是否充足\n" +
-                "• 确认网络能正常访问 AI 服务\n" +
-                "• 如果反复失败，请联系开发者并附上应用日志");
+            // 带重试入口：否则用户唯一的重试办法是把整个生成对话框（目标条数 / 自定义提示词）重填一遍。
+            if (Shared.MixCutDialog.Confirm(
+                    owner,
+                    "方案生成失败",
+                    $"{friendly}\n\n如果反复失败，可以到「设置 → 关于」导出诊断日志发给开发者。",
+                    confirmText: "重新生成", cancelText: "稍后再说", icon: "⚠"))
+            {
+                OnOpenGenerateDialog(sender, e);
+            }
         }
     }
 
-    /// <summary>把方案生成异常翻译成用户能看懂的人话（QW-1）。完整堆栈仍写日志，不弹给用户。</summary>
-    private static string TranslateGenerateError(Exception ex)
-    {
-        var msg = ex.Message ?? string.Empty;
-        if (msg.Contains("401") || msg.Contains("Unauthorized")) return "API Key 无效或已过期，请到「设置 → API」检查。";
-        if (msg.Contains("403") || msg.Contains("Forbidden")) return "API 访问被拒绝，请确认 Key 权限或额度是否充足。";
-        if (msg.Contains("429")) return "请求过于频繁，请稍后再试。";
-        if (ex is TaskCanceledException || msg.Contains("timeout", StringComparison.OrdinalIgnoreCase) || msg.Contains("超时"))
-            return "请求超时，请检查网络连接后重试。";
-        if (ex is System.Net.Http.HttpRequestException) return "网络请求失败，请检查网络连接。";
-        return string.IsNullOrWhiteSpace(msg) ? "发生未知错误。" : msg;
-    }
+    /// <summary>
+    /// 把方案生成异常翻译成人话。直接复用全局 <see cref="ExceptionTranslator"/>。
+    ///
+    /// 这里原本自带一套 `msg.Contains("401")` 的字符串匹配，有两个问题：
+    ///   ① 兜底分支 `return msg` 会把**裸 ex.Message 原样弹给用户** —— 上面那句
+    ///      「不再把 stack trace / 异常类型直接弹给用户」的注释，恰恰被自己的兜底破坏了；
+    ///   ② 靠子串猜错误类型很脆弱，而 AIProviderException 本来就带 Kind 枚举。
+    /// </summary>
+    private static string TranslateGenerateError(Exception ex) =>
+        ExceptionTranslator.ToUserMessage(ex);
 
     // ---- 策略列表 ----
 

@@ -202,7 +202,10 @@ public sealed class UserSegmentImportService
         catch (Exception ex)
         {
             _logger.LogError(ex, "[UserSegDiag] 上传自建分镜失败 file={File}", name);
-            return new(name, UserSegmentImportStatus.Failed, null, null, ex.Message);
+            // 这条 Message 会被拼进「N 个跳过（xxx.mp4：…）」的 toast 直接给用户看，
+            // 用裸 ex.Message 会漏出「The process cannot access the file...」这种英文原文。
+            return new(name, UserSegmentImportStatus.Failed, null, null,
+                MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex));
         }
     }
 

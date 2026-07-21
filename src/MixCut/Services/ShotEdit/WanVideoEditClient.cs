@@ -106,7 +106,7 @@ public sealed class WanVideoEditClient
         {
             _logger.LogError("[ShotEditDiag] 提交失败 HTTP {Code}: {Body}", (int)resp.StatusCode, Trunc(respText));
             throw new ShotEditException("画面替换提交失败：" +
-                ApiErrorClassifier.Friendly($"HTTP {(int)resp.StatusCode} {respText}"));
+                ApiErrorClassifier.ForUser($"HTTP {(int)resp.StatusCode} {respText}"));
         }
         var taskId = ParseTaskId(respText)
             ?? throw new ShotEditException("画面替换提交异常：接口未返回任务 id");
@@ -149,7 +149,7 @@ public sealed class WanVideoEditClient
             case "CANCELED":
                 _logger.LogError("[ShotEditDiag] 任务失败: {Msg}", failMsg);
                 return new PollResult(PollOutcome.Failed, null,
-                    ApiErrorClassifier.Friendly(failMsg ?? "task failed"));
+                    ApiErrorClassifier.ForUser(failMsg ?? "task failed"));
             case "UNKNOWN":
                 // 阿里：任务不存在 / 已过期(超24h) / 非本账户 —— 旧结果拿不回了。
                 return new PollResult(PollOutcome.Expired, null, null);

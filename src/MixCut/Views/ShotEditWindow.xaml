@@ -57,11 +57,28 @@
         </ScrollViewer>
 
         <!-- [D] 错误横幅 -->
+        <!-- 错误横幅：原来只有一个 ⚠ 加一行字，既没有重试也没有关闭 —— 用户读完只能干瞪眼。
+             现在右侧带「重试」（有可重试动作时才出现）与「✕」。 -->
         <Border x:Name="ErrorBanner" Grid.Row="5" Background="#14C06F00" Padding="12,10" Visibility="Collapsed">
-            <StackPanel Orientation="Horizontal">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
                 <TextBlock Text="⚠" FontSize="14" Foreground="#C06F00" Margin="0,0,8,0" VerticalAlignment="Center" />
-                <TextBlock x:Name="ErrorText" FontSize="12" Foreground="#C06F00" TextWrapping="Wrap" MaxWidth="900" />
-            </StackPanel>
+                <TextBlock Grid.Column="1" x:Name="ErrorText" FontSize="12" Foreground="#C06F00"
+                           TextWrapping="Wrap" VerticalAlignment="Center" />
+                <Button Grid.Column="2" x:Name="ErrorRetryButton" Content="重试"
+                        Margin="12,0,0,0" Padding="10,3" FontSize="11" Cursor="Hand"
+                        Background="White" BorderBrush="#C06F00" Foreground="#C06F00"
+                        Visibility="Collapsed" Click="OnErrorRetryClick" />
+                <Button Grid.Column="3" x:Name="ErrorCloseButton" Content="✕"
+                        Margin="8,0,0,0" Padding="0" Width="22" Height="22" FontSize="11" Cursor="Hand"
+                        Background="Transparent" BorderThickness="0" Foreground="#C06F00"
+                        ToolTip="关闭提示" Click="OnErrorCloseClick" />
+            </Grid>
         </Border>
     </Grid>
 </Window>

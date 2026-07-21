@@ -64,8 +64,10 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
         catch (Exception ex)
         {
+            Serilog.Log.Error(ex, "[SegLibDiag] 打开分镜头替换工作区失败 seg={Seg}", segment.Id);
             Components.ToastService.Show(
-                "打开分镜头替换失败：" + ex.Message, Components.ToastStyle.Error);
+                "打不开分镜头替换工作区。可能是这个分镜的源视频已被移动或删除，请到「素材导入」确认文件还在原位置。",
+                Components.ToastStyle.Error);
         }
     }
 
@@ -151,7 +153,9 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         catch (Exception ex)
         {
             Serilog.Log.Error(ex, "[UserSegUpload] 上传处理异常");
-            Components.ToastService.Show("上传自建分镜失败：" + ex.Message, Components.ToastStyle.Error);
+            Components.ToastService.Show(
+                "上传没能完成。请确认选中的是完整的 mp4/mov 文件、且没有被其它程序占用，然后重试。",
+                Components.ToastStyle.Error);
         }
         finally
         {
@@ -193,7 +197,9 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
         catch (Exception ex)
         {
-            Components.ToastService.Show("拆分失败：" + ex.Message, Components.ToastStyle.Error);
+            Components.ToastService.Show(
+                "拆分没有完成，原分镜没有改动。" + MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex),
+                Components.ToastStyle.Error);
         }
     }
 

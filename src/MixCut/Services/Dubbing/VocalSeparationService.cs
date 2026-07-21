@@ -62,7 +62,7 @@ public sealed class VocalSeparationService
 
         if (!BundledBinaries.DemucsAvailable)
         {
-            throw new DubException("未找到人声分离组件（demucs），请重新安装应用");
+            throw new DubException("缺少人声分离所需的组件，请重新安装 MixCut 后重试。");
         }
 
         var model = await EnsureModelAsync(onProgress, ct);
@@ -232,12 +232,18 @@ public sealed class VocalSeparationService
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             try { process.Kill(entireProcessTree: true); } catch { /* 忽略 */ }
-            throw new DubException($"人声分离超时（超过 {timeout.TotalMinutes:F0} 分钟）");
+            throw new DubException(
+                $"人声分离超过 {timeout.TotalMinutes:F0} 分钟仍未完成，已中止。"
+                + "建议先处理较短的素材，或关闭占用 CPU 的程序后重试。");
         }
 
         if (process.ExitCode != 0)
         {
-            throw new DubException($"人声分离失败（demucs 退出码 {process.ExitCode}）");
+            // 退出码只进日志（上面已记）：DubException 的 Message 会被 ExceptionTranslator 直接透传给用户，
+            // 拼进去就是「人声分离失败（demucs 退出码 -1073741515）」，英文组件名 + 错误码双重踩线。
+            throw new DubException(
+                "人声分离没能完成。多半是内存不足或素材过长，"
+                + "请关闭剪映、浏览器等占内存的大程序后重试；若这段素材背景音很复杂，也可以直接用原声。");
         }
     }
 

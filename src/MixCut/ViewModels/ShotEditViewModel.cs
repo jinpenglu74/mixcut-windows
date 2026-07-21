@@ -425,7 +425,7 @@ public sealed class ShotEditViewModel
         {
             // 续查失败（网络抖动等）→ 回退 TimedOut，taskId 保留，用户可再重试；绝不清空 taskId。
             await RevertToTimedOutAsync(variantId);
-            ErrorMessage = "重新获取失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex);
+            ErrorMessage = "重新获取失败：" + MixCut.Services.AI.ApiErrorClassifier.ForUser(ex);
             _logger.LogWarning(ex, "[ShotEditDiag] 超时重试失败 variant={Variant}", variantId);
         }
         finally
@@ -464,7 +464,7 @@ public sealed class ShotEditViewModel
             {
                 ShotEditException se => se.Message,
                 MixCut.Services.VideoProcessing.FFmpegException => MixCut.Services.Export.ExportErrorMessage.ToFriendly(ex),
-                _ => "画面替换失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(ex),
+                _ => "画面替换失败：" + MixCut.Services.AI.ApiErrorClassifier.ForUser(ex),
             };
             await MarkFailedNoTaskAsync(variantId, "提交失败：" + friendly);
             ErrorMessage = friendly;

@@ -58,7 +58,7 @@ public sealed class CloneTtsClient
         {
             _logger.LogError("[DubDiag] 克隆合成失败 HTTP {Code}: {Body}", (int)resp.StatusCode, Trunc(respText));
             // 原始英文体只进日志（上一行）；给用户看的走统一分类器翻译成人话（免费额度/欠费/无效 Key…）。
-            throw new DubException("配音合成失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly($"HTTP {(int)resp.StatusCode} {respText}"));
+            throw new DubException("配音合成失败：" + MixCut.Services.AI.ApiErrorClassifier.ForUser($"HTTP {(int)resp.StatusCode} {respText}"));
         }
 
         string? urlStr;

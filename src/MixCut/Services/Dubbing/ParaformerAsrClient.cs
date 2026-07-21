@@ -49,7 +49,7 @@ public sealed class ParaformerAsrClient
         {
             await ws.ConnectAsync(new Uri(WsEndpoint), cts.Token);
             if (ws.State != WebSocketState.Open)
-                throw new DubException("Paraformer WebSocket 连接失败");
+                throw new DubException("连不上语音识别服务，请检查网络后重试。");
 
             var taskId = Guid.NewGuid().ToString();
             var finals = new List<string>();
@@ -83,7 +83,7 @@ public sealed class ParaformerAsrClient
 
             var transcript = string.Join("", finals).Trim();
             if (string.IsNullOrEmpty(transcript))
-                throw new DubException("ASR 识别返回空文本（请确认该片段有清晰人声）");
+                throw new DubException("这段音频没识别出文字，请确认它有清晰人声、不是纯背景音或静音片段。");
 
             _logger.LogInformation("[ParaformerDiag] 识别完成：「{Text}」", transcript.Length > 80 ? transcript[..80] + "…" : transcript);
             return transcript;
@@ -122,7 +122,11 @@ public sealed class ParaformerAsrClient
         {
             var msg = await ReceiveText(ws, ct);
             if (msg is null)
-                throw new DubException("Paraformer WebSocket 连接被服务端关闭，未收到 " + target);
+            {
+                // 协议帧名（task-started / task-finished 等）只进日志，不进用户文案。
+                Serilog.Log.Error("[DubDiag] 语音识别连接被服务端关闭，未收到 {Target}", target);
+                throw new DubException("语音识别服务中途断开了，请重试；若反复出现，请检查网络是否稳定。");
+            }
 
             using var doc = JsonDocument.Parse(msg);
             var root = doc.RootElement;
@@ -139,7 +143,7 @@ public sealed class ParaformerAsrClient
                     ? m.GetString() : msg[..Math.Min(200, msg.Length)];
                 // 原始英文体经分类器翻成人话（含前 200 字原文片段供排查）；此为 static 方法无 _logger，
                 // 原文已随 DubException.Message 冒泡，上层 catch 会 LogError。
-                throw new DubException("语音识别失败：" + MixCut.Services.AI.ApiErrorClassifier.Friendly(errMsg ?? "未知错误"));
+                throw new DubException("语音识别失败：" + MixCut.Services.AI.ApiErrorClassifier.ForUser(errMsg ?? "未知错误"));
             }
 
             if (ev == "result-generated")

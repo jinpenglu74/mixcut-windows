@@ -95,7 +95,15 @@ public sealed class CaptionTimingEditorWindow : Window
         Loaded += async (_, _) =>
         {
             try { _lines = await _dubVM.LoadCaptionLinesAsync(_dubId); }
-            catch { _lines = new List<CaptionLine>(); }
+            catch (Exception ex)
+            {
+                // 不能把「读失败」伪装成「没有数据」：空列表会让界面显示
+                // 「还没有逐句字幕数据，点下方『重新自动对齐』生成」，
+                // 用户照做就会用重新对齐**覆盖掉库里原本正确的数据**。
+                Serilog.Log.Error(ex, "[Caption] 读取逐句字幕失败 dub={Dub}", _dubId);
+                _lines = new List<CaptionLine>();
+                _loadFailed = true;
+            }
             RebuildRows();
         };
         Closed += (_, _) => { StopPlayback(); try { _player.Close(); } catch { } };
@@ -162,7 +170,13 @@ public sealed class CaptionTimingEditorWindow : Window
     private void RebuildRows()
     {
         _rows.Children.Clear();
-        _emptyText.Text = _busyRealign ? "正在对齐…" : "还没有逐句字幕数据，点下方「重新自动对齐」生成";
+        // 三种空态要分清楚 —— 尤其「读取失败」绝不能说成「还没有数据」，
+        // 否则用户会去点「重新自动对齐」，把库里原本正确的时间数据覆盖掉。
+        _emptyText.Text = _busyRealign
+            ? "正在对齐…"
+            : _loadFailed
+                ? "没能读出这版配音的字幕时间数据，请关掉窗口重新打开。\n（先不要点「重新自动对齐」，以免覆盖已有数据）"
+                : "还没有逐句字幕数据，点下方「重新自动对齐」生成";
         _emptyText.Visibility = _lines.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         for (var i = 0; i < _lines.Count; i++)
             _rows.Children.Add(BuildRow(i));
@@ -332,7 +346,30 @@ public sealed class CaptionTimingEditorWindow : Window
         Persist(); RebuildRows();
     }
 
-    private void Persist() => _ = _dubVM.SaveCaptionLinesAsync(_dubId, _lines);
+    /// <summary>
+    /// 落库当前时间轴。
+    ///
+    /// 原本是 `_ = SaveCaptionLinesAsync(...)` 这样的 fire-and-forget —— 异常完全无人接：
+    /// 用户调了一整屏的时间点，保存失败了没有任何提示，关掉窗口后改动全没了。
+    /// 这是本窗口唯一会**丢用户数据**的地方，必须出声。
+    /// </summary>
+    private async void Persist()
+    {
+        try
+        {
+            await _dubVM.SaveCaptionLinesAsync(_dubId, _lines);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Error(ex, "[Caption] 保存逐句字幕失败 dub={Dub}", _dubId);
+            Components.ToastService.Show(
+                "刚才这次时间调整没有保存成功，请再调一次；若反复失败，关掉窗口重新打开会回到上次保存的状态。",
+                Components.ToastStyle.Error);
+        }
+    }
+
+    /// <summary>读取失败标记：用于把「读不出来」和「本来就没有」两种空态区分开。</summary>
+    private bool _loadFailed;
 
     private async void OnRealign()
     {
@@ -351,8 +388,20 @@ public sealed class CaptionTimingEditorWindow : Window
         {
             await _dubVM.AlignCaptionsAsync(_dubId);
             _lines = await _dubVM.LoadCaptionLinesAsync(_dubId);
+            _loadFailed = false;
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // 原来这里是空 catch：对齐失败后 _lines 停在上面清空的状态，界面显示
+            // 「还没有逐句字幕数据，点下方『重新自动对齐』生成」——
+            // 把一次失败伪装成「从来没生成过」，用户会一直点同一个按钮。
+            Serilog.Log.Error(ex, "[Caption] 重新对齐失败 dub={Dub}", _dubId);
+            try { _lines = await _dubVM.LoadCaptionLinesAsync(_dubId); }   // 把原来的行读回来，别停在空列表
+            catch { _loadFailed = true; }
+            Components.ToastService.Show(
+                "重新对齐没成功，你原来的时间没有被改动。可能是网络不通或配音音频损坏，请稍后再试一次。",
+                Components.ToastStyle.Error);
+        }
         finally { _busyRealign = false; RebuildRows(); }
     }
 

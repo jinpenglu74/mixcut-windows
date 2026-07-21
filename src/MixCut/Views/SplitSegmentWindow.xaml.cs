@@ -51,7 +51,8 @@ public partial class SplitSegmentWindow : Window
             ConfirmButton.IsEnabled = false;
             FrameSlider.IsEnabled = false;
             InfoText.Text = string.IsNullOrEmpty(_videoPath) || !File.Exists(_videoPath ?? string.Empty)
-                ? "找不到源视频文件" : "分镜太短，无法拆分（每段至少 0.3 秒）";
+                ? "找不到源视频文件，它可能已被移动或删除。请到「素材导入」重新导入这个视频后再拆分。"
+                : "分镜太短，无法拆分（每段至少 0.3 秒）。可以先用卡片上的 IN/OUT 把它调长一些。";
             return;
         }
 
@@ -109,7 +110,11 @@ public partial class SplitSegmentWindow : Window
             _ready = _frames.Length > 0;
             if (!_ready)
             {
-                InfoText.Text = "预览加载失败";
+                // 预览出不来就没法选拆分点，确认按钮必须禁掉 —— 否则用户对着空窗口点确定，
+                // 会按一个没意义的默认位置把分镜切开。
+                ConfirmButton.IsEnabled = false;
+                InfoText.Text = "读不出这段素材的预览画面，可能是视频编码不受支持。"
+                              + "可以先到「素材导入」重新分析这个视频，或换一段素材。";
                 return;
             }
             Serilog.Log.Information("[SplitDiag] 预览帧就绪 frames={N} range=[{S},{E})", _frames.Length, _startFrame, _endFrame);
@@ -119,7 +124,9 @@ public partial class SplitSegmentWindow : Window
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "[SplitDiag] 预览帧预解码失败");
-            InfoText.Text = "预览加载失败";
+            ConfirmButton.IsEnabled = false;
+            InfoText.Text = "预览加载失败，多半是内存不足或源视频已被移动。"
+                          + "请关闭占内存的大程序、确认原视频还在原位置，然后重新打开本窗口。";
         }
     }
 

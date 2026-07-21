@@ -37,7 +37,10 @@ public partial class DubVariantInspectorView : UserControl
         }
         catch (Exception ex)
         {
-            Components.ToastService.Show("打开逐句字幕失败：" + ex.Message, Components.ToastStyle.Error);
+            Serilog.Log.Error(ex, "[DubDiag] 打开逐句字幕编辑器失败 dub={Dub}", item.DubId);
+            Components.ToastService.Show(
+                "打不开逐句字幕编辑器。这版配音的音频可能已被移动或删除，请重新生成一次配音后再试。",
+                Components.ToastStyle.Error);
         }
     }
 }

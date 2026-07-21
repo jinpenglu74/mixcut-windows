@@ -59,7 +59,11 @@ public partial class ShotEditWindow : Window
                 RebuildAll();
                 await _vm.LoadShotsAsync(segment);
             }
-            catch (Exception ex) { ShowError("切分镜头失败：" + ex.Message); }
+            catch (Exception ex)
+            {
+                ShowError("没能把这个分镜切成分镜头。可能是源视频已被移动或删除，也可能这段素材太短、没有明显的画面切换",
+                    ex, () => _vm.LoadShotsAsync(_segment));
+            }
         };
         Closed += (_, _) =>
         {
@@ -112,18 +116,83 @@ public partial class ShotEditWindow : Window
             : "先给每个分镜头位置各选一个版本（原版或已完成变体）才能合成";
         CloseBtn.IsEnabled = !_vm.IsComposing;   // 合成中禁用关闭，防中断落库
 
-        if (!string.IsNullOrEmpty(_vm.ErrorMessage)) ShowError(_vm.ErrorMessage!);
-        else { ErrorBanner.Visibility = Visibility.Collapsed; }
+        // 走统一出口：瞬时错误（用户刚触发的）优先于 VM 的持久错误，且不会被这次刷新抹掉。
+        // 原来这里是「VM 没错就折叠横幅」，而 RebuildAll 每收到一次变体进度就跑一遍 ——
+        // 用户删除变体失败弹出的红字，会被下一个变体的进度回调瞬间清掉。
+        ApplyErrorBanner();
 
         BuildTrack();
         BuildEditRow();
         BuildVersionPanel();
     }
 
+    /// <summary>
+    /// 用户手动触发的瞬时错误。与 VM 的持久 ErrorMessage 分开存 ——
+    /// 否则 RebuildAll（每次变体进度回调都会跑）会因为 _vm.ErrorMessage 为 null 把横幅直接折叠掉，
+    /// 用户只看到红字一闪而过，根本来不及读（删除变体失败时最容易撞上）。
+    /// </summary>
+    private string? _transientError;
+
+    /// <summary>瞬时错误对应的重试动作；为 null 时横幅不显示「重试」。</summary>
+    private Func<Task>? _transientRetry;
+
     private void ShowError(string msg)
     {
+        _transientError = msg;
+        _transientRetry = null;
+        ApplyErrorBanner();
+    }
+
+    /// <summary>
+    /// 统一错误出口：翻成人话 + 原始异常进日志 + 可选重试入口。
+    ///
+    /// 本窗口原有 10 处 `ShowError("xxx失败：" + ex.Message)`，底层全是 ffmpeg 与 DashScope，
+    /// 于是用户会看到「合并失败：视频处理失败 (exit -1073741515): ...」这种东西 ——
+    /// 而这里还是**付费**路径，最不该出现这种界面。
+    /// </summary>
+    private void ShowError(string what, Exception ex, Func<Task>? retry = null)
+    {
+        Serilog.Log.Error(ex, "[ShotEditDiag] {What}", what);
+        _transientError = $"{what}：{MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex)}";
+        _transientRetry = retry;
+        ApplyErrorBanner();
+    }
+
+    private void ApplyErrorBanner()
+    {
+        var msg = _transientError ?? _vm.ErrorMessage;
+        if (string.IsNullOrEmpty(msg))
+        {
+            ErrorBanner.Visibility = Visibility.Collapsed;
+            return;
+        }
         ErrorText.Text = msg;
+        ErrorRetryButton.Visibility = _transientRetry is null ? Visibility.Collapsed : Visibility.Visible;
         ErrorBanner.Visibility = Visibility.Visible;
+    }
+
+    private void OnErrorCloseClick(object sender, RoutedEventArgs e)
+    {
+        _transientError = null;
+        _transientRetry = null;
+        ErrorBanner.Visibility = Visibility.Collapsed;
+    }
+
+    private async void OnErrorRetryClick(object sender, RoutedEventArgs e)
+    {
+        var retry = _transientRetry;
+        if (retry is null) return;
+        _transientError = null;
+        _transientRetry = null;
+        ErrorBanner.Visibility = Visibility.Collapsed;
+        try
+        {
+            await retry();
+        }
+        catch (Exception ex)
+        {
+            ShowError("重试仍未成功", ex);
+        }
     }
 
     // ---- [B] 轨道 ----
@@ -167,7 +236,11 @@ public partial class ShotEditWindow : Window
                 Cursor = System.Windows.Input.Cursors.Hand, Background = Brush("BgSubtleBrush"),
                 Foreground = Brush("TextSecondaryBrush"), BorderThickness = new Thickness(0),
             };
-            retry.Click += async (_, _) => { try { await _vm.LoadShotsAsync(_segment); } catch (Exception ex) { ShowError("切分失败：" + ex.Message); } };
+            retry.Click += async (_, _) =>
+            {
+                try { await _vm.LoadShotsAsync(_segment); }
+                catch (Exception ex) { ShowError("仍然没能切分。请确认原视频还在原位置", ex); }
+            };
             empty.Children.Add(retry);
             TrackPanel.Children.Add(empty);
             return;
@@ -329,7 +402,7 @@ public partial class ShotEditWindow : Window
             if (deltaFrames != 0)
             {
                 try { await _vm.NudgeBoundaryAsync(leftShotIndex, deltaFrames); }
-                catch (Exception ex) { ShowError("调整边界失败：" + ex.Message); }
+                catch (Exception ex) { ShowError("边界没调成功，手柄已复位，改动未保存", ex); }
             }
         };
         panel.Children.Add(handle);
@@ -345,7 +418,7 @@ public partial class ShotEditWindow : Window
         mergeBtn.Click += async (_, _) =>
         {
             try { await _vm.MergeShotsAsync(leftShotIndex); }
-            catch (Exception ex) { ShowError("合并失败：" + ex.Message); }
+            catch (Exception ex) { ShowError("这两个镜头没能合并，画面未改动。可以重试一次，或改用「拆分」重新划分边界", ex); }
         };
         panel.Children.Add(mergeBtn);
         return panel;
@@ -388,7 +461,7 @@ public partial class ShotEditWindow : Window
         splitBtn.Click += async (_, _) =>
         {
             try { await _vm.SplitShotAsync(shot.OrderIndex); }
-            catch (Exception ex) { ShowError("拆分失败：" + ex.Message); }
+            catch (Exception ex) { ShowError("没能拆分这个镜头。镜头太短时无法再拆（每段至少约 0.3 秒），可以先调整边界让它变长", ex); }
         };
         EditRowPanel.Children.Add(splitBtn);
     }
@@ -414,7 +487,7 @@ public partial class ShotEditWindow : Window
         b.Click += async (_, _) =>
         {
             try { await _vm.NudgeBoundaryAsync(boundaryIndex, delta); }
-            catch (Exception ex) { ShowError("调整边界失败：" + ex.Message); }
+            catch (Exception ex) { ShowError("边界没调成功，改动未保存。若反复失败，关掉本窗口重新打开可恢复到上次保存的状态", ex); }
         };
         return b;
     }
@@ -472,7 +545,12 @@ public partial class ShotEditWindow : Window
         var stack = new StackPanel { Width = 90, Margin = new Thickness(0, 0, 10, 0) };
         var border = VersionThumb(shot.ThumbnailPath, selected,
             (host, hint) => PlayShotInHost(host, hint, shot.ThumbnailPath, shot.StartFrame, shot.EndFrame));
-        border.MouseLeftButtonUp += async (_, _) => { try { await _vm.SelectAsync(shot.OrderIndex, null); } catch { } };
+        border.MouseLeftButtonUp += async (_, _) =>
+        {
+            // 不能吞：用户点了卡片，选中框没变又没有任何提示，只会反复点。
+            try { await _vm.SelectAsync(shot.OrderIndex, null); }
+            catch (Exception ex) { ShowError("没能选中「原版」，请再点一次", ex); }
+        };
         stack.Children.Add(border);
         stack.Children.Add(new TextBlock { Text = "原版", FontSize = 10, Foreground = Brush("TextSecondaryBrush"), Margin = new Thickness(0, 4, 0, 0) });
         stack.Children.Add(new TextBlock { Text = $"{_vm.DurationOf(shot):F1}s", FontSize = 10, Foreground = Brush("TextTertiaryBrush") });
@@ -525,7 +603,11 @@ public partial class ShotEditWindow : Window
         {
             border = VersionThumb(v.ThumbnailPath, selected,
                 (host, hint) => PlayVideoInHost(host, hint, v.ResultVideoPath, v.ThumbnailPath));
-            border.MouseLeftButtonUp += async (_, _) => { try { await _vm.SelectAsync(shot.OrderIndex, v.Id); } catch { } };
+            border.MouseLeftButtonUp += async (_, _) =>
+            {
+                try { await _vm.SelectAsync(shot.OrderIndex, v.Id); }
+                catch (Exception ex) { ShowError("没能选中这个版本，请再点一次", ex); }
+            };
         }
         stack.Children.Add(border);
 
@@ -564,7 +646,11 @@ public partial class ShotEditWindow : Window
             Foreground = new SolidColorBrush(Color.FromRgb(0xD3, 0x3A, 0x3A)), Cursor = System.Windows.Input.Cursors.Hand,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        del.Click += async (_, _) => { try { await _vm.DeleteVariantAsync(v.Id); } catch (Exception ex) { ShowError("删除失败：" + ex.Message); } };
+        del.Click += async (_, _) =>
+        {
+            try { await _vm.DeleteVariantAsync(v.Id); }
+            catch (Exception ex) { ShowError("没能删除这个版本，它还在列表里。若它正在生成中，请等出结果后再删", ex); }
+        };
         stack.Children.Add(del);
         return stack;
     }
@@ -622,7 +708,7 @@ public partial class ShotEditWindow : Window
         btn.Click += async (_, _) =>
         {
             try { await action(); }
-            catch (Exception ex) { ShowError("操作失败：" + ex.Message); }
+            catch (Exception ex) { ShowError("操作没成功。若是网络问题稍后再试即可，本次不会重复扣费", ex); }
         };
         return btn;
     }
@@ -683,7 +769,7 @@ public partial class ShotEditWindow : Window
             if (prompt.Length == 0) { ShowError("请先输入提示词"); return; }
             if (_promptBox != null) _promptBox.Text = string.Empty;
             try { await _vm.GenerateVariantAsync(shot.Id, prompt); }
-            catch (Exception ex) { ShowError("生成失败：" + ex.Message); }
+            catch (Exception ex) { ShowError("没能提交这次 AI 生成，本次未扣费。可能是网络不通或 API Key 额度不足，请到「设置 → AI 模型」确认额度", ex); }
         }
         // Ctrl+Enter 快速生成（Enter 仍是换行）。
         _promptBox.PreviewKeyDown += async (_, e) =>
@@ -730,7 +816,7 @@ public partial class ShotEditWindow : Window
                 Close();
             }
         }
-        catch (Exception ex) { ShowError("合成失败：" + ex.Message); }
+        catch (Exception ex) { ShowError("合成没能完成，原分镜画面未被改动。可能是内存不足或素材规格过高，建议关闭剪映、浏览器等占内存的程序后重试", ex); }
     }
 
     private void OnCloseClick(object sender, RoutedEventArgs e) => Close();

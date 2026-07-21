@@ -72,15 +72,27 @@ public static class ApiErrorClassifier
         return null;
     }
 
-    /// <summary>带兜底：识别出原因则「人话 +（接口返回：原文前 N 字）」，识别不出返回原文（截断）。</summary>
-    public static string Friendly(string? raw, int maxRawLen = 200)
-    {
-        raw ??= string.Empty;
-        var hint = Hint(raw);
-        var snippet = raw.Length > maxRawLen ? raw[..maxRawLen] : raw;
-        return hint is null ? snippet : $"{hint}\n（接口返回：{snippet}）";
-    }
+    /// <summary>
+    /// **给用户看**：只出人话，任何情况下都不含接口原文。
+    ///
+    /// 这个方法替代了原来的 <c>Friendly</c>。<c>Friendly</c> 是个危险的设计 ——
+    /// 它伪装成「翻译器」，实际上识别出原因时会把 200 字英文 JSON 拼在后面
+    /// （`（接口返回：{"code":"InvalidApiKey","message":"Invalid API-key provided.",...}）`），
+    /// 识别不出时更是直接返回英文原文一个字都不翻。它有 8 个调用点，
+    /// 全都直通用户界面，是 CLAUDE.md「不许把英文报错丢给用户」红线最大的破口。
+    /// 原文要看请走 <see cref="ForLog"/>，只进日志。
+    /// </summary>
+    public static string ForUser(string? raw) =>
+        Hint(raw)
+        ?? "AI 服务返回了异常，请稍后重试。若反复出现，请到「设置 → AI 模型」确认 API Key 是否有效、额度是否充足。";
 
-    /// <summary>从异常取原始文本再翻译（异常 Message 里通常已带 HTTP 原文）。</summary>
-    public static string Friendly(Exception ex, int maxRawLen = 200) => Friendly(ex.Message, maxRawLen);
+    /// <summary>同上，从异常取文本。</summary>
+    public static string ForUser(Exception ex) => ForUser(ex.Message);
+
+    /// <summary>
+    /// **仅供日志**：截断 + 脱敏后的接口原文，绝不能进 UI。
+    /// 脱敏是因为部分网关的错误响应体会回显 Authorization 头（含用户密钥），
+    /// 而日志会被「导出诊断包」打包发给开发者。
+    /// </summary>
+    public static string ForLog(string? raw, int maxRawLen = 500) => LogSanitizer.Safe(raw, maxRawLen);
 }

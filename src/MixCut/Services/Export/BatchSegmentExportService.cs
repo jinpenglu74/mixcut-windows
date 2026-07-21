@@ -93,8 +93,10 @@ public sealed class BatchSegmentExportService
             }
             catch (Exception ex)
             {
-                failed.Add((item, ex.Message));
-                _logger.LogError("批量导出失败 {File}: {Msg}", item.FileName, ex.Message);
+                // 这条会显示在批量导出结果对话框的失败清单里 —— 必须是人话。
+                // 裸 ex.Message 对 FFmpegException 是「视频处理失败 (exit -1073741515): <stderr>」。
+                failed.Add((item, ExportErrorMessage.ToFriendly(ex)));
+                _logger.LogError(ex, "批量导出失败 {File}", item.FileName);
             }
 
             onProgress?.Invoke(new SegmentBatchExportProgress(

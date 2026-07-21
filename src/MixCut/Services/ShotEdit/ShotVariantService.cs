@@ -120,7 +120,7 @@ public sealed class ShotVariantService
                     {
                         _logger.LogWarning(ex, "[ShotEditDiag] 结果下载失败 variant={Variant}", variantId);
                         return new VariantResult(VariantOutcome.Failed, null, null,
-                            "结果下载失败：" + ApiErrorClassifier.Friendly(ex));
+                            "结果下载失败：" + ApiErrorClassifier.ForUser(ex));
                     }
                 case PollOutcome.Failed:
                     return new VariantResult(VariantOutcome.Failed, null, null, poll.FailReason);

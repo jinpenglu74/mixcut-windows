@@ -336,6 +336,12 @@ public sealed class OpenAICompatibleClient : IAiProvider
             catch (AIProviderException ex)
             {
                 lastError = ex;
+                // TechnicalDetail（HTTP 码 + 接口原文）已从用户可见的 Message 里移出，
+                // 必须在这里落盘，否则排查线索就真丢了。
+                if (!string.IsNullOrEmpty(ex.TechnicalDetail))
+                {
+                    _logger.LogError("[AIDiag] {Kind} 技术详情: {Detail}", ex.Kind, ex.TechnicalDetail);
+                }
                 if (ex.Kind is AIProviderErrorKind.ApiKeyNotConfigured
                     or AIProviderErrorKind.ClientError
                     or AIProviderErrorKind.InsufficientBalance)
