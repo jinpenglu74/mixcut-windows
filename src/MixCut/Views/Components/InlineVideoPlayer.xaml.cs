@@ -40,6 +40,16 @@ public partial class InlineVideoPlayer : UserControl
     /// </summary>
     private static event Action<InlineVideoPlayer>? PlaybackStarted;
 
+    /// <summary>
+    /// 全局停播请求。宿主视图在「播放已经不该继续」的时刻调用 <see cref="StopAll"/>：
+    /// 切换项目、进入多选模式、离开当前页面 —— 否则用户切走了，上一页的分镜还在出声。
+    /// （卡片被销毁那条路径由 Unloaded 里的 Stop 兜住，这里管的是卡片还活着但语境已变的情况。）
+    /// </summary>
+    private static event Action? StopAllRequested;
+
+    /// <summary>停止当前正在播放的任意内联播放器。停止会走 Idle，宿主据此还原缩略图 + ▶。</summary>
+    public static void StopAll() => StopAllRequested?.Invoke();
+
     /// <summary>true 时鼠标停 350ms 自动播放，离开立即停。全局已改为「点击播放」(false)，详见 §会话踩坑沉淀。</summary>
     public bool AutoPlayOnHover { get; set; }
 
@@ -71,15 +81,26 @@ public partial class InlineVideoPlayer : UserControl
         Unloaded += (_, _) =>
         {
             PlaybackStarted -= OnAnotherPlayerStarted;
+            StopAllRequested -= OnStopAllRequested;
             Stop();
         };
         Loaded += (_, _) =>
         {
             PlaybackStarted -= OnAnotherPlayerStarted;
             PlaybackStarted += OnAnotherPlayerStarted;
+            StopAllRequested -= OnStopAllRequested;
+            StopAllRequested += OnStopAllRequested;
         };
         MouseEnter += OnRootMouseEnter;
         MouseLeave += OnRootMouseLeave;
+    }
+
+    private void OnStopAllRequested()
+    {
+        if (PlayingState.Visibility == Visibility.Visible)
+        {
+            Stop();
+        }
     }
 
     private void OnAnotherPlayerStarted(InlineVideoPlayer who)

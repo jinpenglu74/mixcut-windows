@@ -21,6 +21,10 @@ public partial class NarrativeStructureEditorWindow : Window
     private readonly IReadOnlyList<Segment> _segments;
     private readonly List<SemanticType> _availableTags;       // 只列库里真实有分镜的标签
     private readonly List<List<SemanticType>> _slots = new();  // 各段已选标签
+    /// <summary>各段候选分镜的最短时长（秒），null=不限。与 <see cref="_slots"/> 同索引并行维护。对齐 macOS NarrativeSlot.minDuration。</summary>
+    private readonly List<double?> _slotMin = new();
+    /// <summary>各段候选分镜的最长时长（秒），null=不限。与 <see cref="_slots"/> 同索引并行维护。</summary>
+    private readonly List<double?> _slotMax = new();
     private bool _generating;
 
     /// <summary>生成成功后非 null，供调用方刷新左栏并选中。</summary>
@@ -38,8 +42,24 @@ public partial class NarrativeStructureEditorWindow : Window
             .Where(t => _segments.Any(s => s.SemanticTypes.Contains(t)))
             .ToList();
 
-        _slots.Add(new List<SemanticType>()); // 起始给一段空的
+        AddSlot(); // 起始给一段空的
         RenderSlots();
+    }
+
+    /// <summary>新增一段（标签空 + 时长不限），保持三个并行列表同步。</summary>
+    private void AddSlot()
+    {
+        _slots.Add(new List<SemanticType>());
+        _slotMin.Add(null);
+        _slotMax.Add(null);
+    }
+
+    /// <summary>删除一段，保持三个并行列表同步。</summary>
+    private void RemoveSlot(int index)
+    {
+        _slots.RemoveAt(index);
+        _slotMin.RemoveAt(index);
+        _slotMax.RemoveAt(index);
     }
 
     private int VariationCount =>
@@ -47,10 +67,14 @@ public partial class NarrativeStructureEditorWindow : Window
             ? n
             : 5;
 
-    private int CandidateCount(IReadOnlyList<SemanticType> tags) =>
-        tags.Count == 0
-            ? 0
-            : NarrativeCandidatePool.CandidatesForSlot(_segments, new NarrativeSlot(0, tags.ToList())).Count;
+    /// <summary>某段的候选数：标签 ∩ 分镜语义类型，再按该段时长区间过滤（与真实生成口径一致）。</summary>
+    private int CandidateCount(int index)
+    {
+        var tags = _slots[index];
+        if (tags.Count == 0) return 0;
+        return NarrativeCandidatePool.CandidatesForSlot(
+            _segments, new NarrativeSlot(0, tags.ToList(), _slotMin[index], _slotMax[index])).Count;
+    }
 
     private void RenderSlots()
     {
@@ -87,7 +111,7 @@ public partial class NarrativeStructureEditorWindow : Window
             Foreground = new SolidColorBrush(Color.FromRgb(0x1D, 0x6B, 0xE5)),
             Cursor = Cursors.Hand,
         };
-        addBtn.Click += (_, _) => { _slots.Add(new List<SemanticType>()); RenderSlots(); };
+        addBtn.Click += (_, _) => { AddSlot(); RenderSlots(); };
         SlotsPanel.Children.Add(addBtn);
 
         UpdatePreviewAndGate();
@@ -96,7 +120,7 @@ public partial class NarrativeStructureEditorWindow : Window
     private UIElement BuildSlotRow(int index)
     {
         var tags = _slots[index];
-        var cand = CandidateCount(tags);
+        var cand = CandidateCount(index);
         var hasError = tags.Count == 0 || cand == 0;
 
         var border = new Border
@@ -150,7 +174,7 @@ public partial class NarrativeStructureEditorWindow : Window
         }
         if (_slots.Count > 1)
         {
-            actions.Children.Add(MiniButton("🗑", () => { _slots.RemoveAt(index); RenderSlots(); }));
+            actions.Children.Add(MiniButton("🗑", () => { RemoveSlot(index); RenderSlots(); }));
         }
         top.Children.Add(actions);
         root.Children.Add(top);
@@ -164,8 +188,85 @@ public partial class NarrativeStructureEditorWindow : Window
         wrap.Children.Add(BuildAddTagButton(index));
         root.Children.Add(wrap);
 
+        // 第三行：时长区间过滤（留空 = 不限）。对齐 macOS「时长 [不限] ~ [不限] 秒」+ lo>hi 校验提示。
+        // 例：设 5 ~ 8，则该段只从「时长 5~8 秒」的分镜里选片（候选数会实时跟着变）。
+        var durRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+        durRow.Children.Add(new TextBlock
+        {
+            Text = "时长", FontSize = 11, Foreground = Brushes.Gray,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0),
+        });
+        durRow.Children.Add(DurationBox(_slotMin[index], v => { _slotMin[index] = v; RenderSlots(); }));
+        durRow.Children.Add(new TextBlock
+        {
+            Text = "~", FontSize = 11, Foreground = Brushes.Gray,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 6, 0),
+        });
+        durRow.Children.Add(DurationBox(_slotMax[index], v => { _slotMax[index] = v; RenderSlots(); }));
+        durRow.Children.Add(new TextBlock
+        {
+            Text = "秒", FontSize = 11, Foreground = Brushes.Gray,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0),
+        });
+        if (_slotMin[index] is { } lo && _slotMax[index] is { } hi && lo > hi)
+        {
+            durRow.Children.Add(new TextBlock
+            {
+                Text = "⚠ 最短时长不能大于最长", FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xD3, 0x3A, 0x3A)),
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
+            });
+        }
+        root.Children.Add(durRow);
+
         border.Child = root;
         return border;
+    }
+
+    /// <summary>
+    /// 时长输入框（留空 = 不限）。失焦 / 回车提交；非法输入（负数、非数字）忽略并保留原值，
+    /// 对齐 macOS durationBinding 的「空串↔nil、非法输入保留原值」语义。空文本时显示灰色「不限」占位。
+    /// </summary>
+    private UIElement DurationBox(double? value, Action<double?> onCommit)
+    {
+        var box = new TextBox
+        {
+            Text = value is { } v ? v.ToString("0.#", CultureInfo.InvariantCulture) : string.Empty,
+            FontSize = 11, Padding = new Thickness(4, 2, 4, 2),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            ToolTip = "留空 = 不限",
+        };
+        var placeholder = new TextBlock
+        {
+            Text = "不限", FontSize = 11,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+            Margin = new Thickness(6, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            IsHitTestVisible = false,
+            Visibility = string.IsNullOrEmpty(box.Text) ? Visibility.Visible : Visibility.Collapsed,
+        };
+        box.TextChanged += (_, _) =>
+            placeholder.Visibility = string.IsNullOrEmpty(box.Text) ? Visibility.Visible : Visibility.Collapsed;
+
+        void Commit()
+        {
+            var t = box.Text.Trim();
+            if (t.Length == 0)
+            {
+                onCommit(null);   // 空 = 不限
+                return;
+            }
+            onCommit(double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && d >= 0
+                ? d
+                : value);         // 非法输入 → 保留原值
+        }
+        box.LostFocus += (_, _) => Commit();
+        box.KeyDown += (_, e) => { if (e.Key == Key.Enter) Commit(); };
+
+        var grid = new Grid { Width = 58 };
+        grid.Children.Add(box);
+        grid.Children.Add(placeholder);
+        return grid;
     }
 
     private UIElement BuildTagChip(int slotIndex, SemanticType tag)
@@ -245,6 +346,8 @@ public partial class NarrativeStructureEditorWindow : Window
     private void Swap(int a, int b)
     {
         (_slots[a], _slots[b]) = (_slots[b], _slots[a]);
+        (_slotMin[a], _slotMin[b]) = (_slotMin[b], _slotMin[a]);   // 时长区间跟着段一起换位
+        (_slotMax[a], _slotMax[b]) = (_slotMax[b], _slotMax[a]);
         RenderSlots();
     }
 
@@ -255,7 +358,7 @@ public partial class NarrativeStructureEditorWindow : Window
             .Select(s => string.Join("/", s.Select(t => t.ToLabel()))));
         PreviewNameText.Text = string.IsNullOrEmpty(preview) ? "（先给每段添加标签）" : preview;
 
-        var allValid = _slots.Count > 0 && _slots.All(s => s.Count > 0 && CandidateCount(s) > 0);
+        var allValid = _slots.Count > 0 && _slots.Select((s, i) => (s, i)).All(x => x.s.Count > 0 && CandidateCount(x.i) > 0);
         GenerateButton.IsEnabled = allValid && !_generating;
     }
 
@@ -272,7 +375,7 @@ public partial class NarrativeStructureEditorWindow : Window
             StatusText.Text = "正在生成方案（AI 选片 + 台词连贯校验）…";
 
             var slots = _slots
-                .Select((tags, i) => new NarrativeSlot(i + 1, tags.ToList()))
+                .Select((tags, i) => new NarrativeSlot(i + 1, tags.ToList(), _slotMin[i], _slotMax[i]))
                 .ToList();
 
             var result = await _vm.CreateNarrativeStructureAsync(_project, slots, _segments, VariationCount);

@@ -26,6 +26,54 @@
     <CornerRadius x:Key="CornerRadiusXl">14</CornerRadius>
     <CornerRadius x:Key="CornerRadiusPill">999</CornerRadius>
 
+    <!-- ==========================================================================
+         Thickness token —— 让 Margin/Padding 真正能引用设计系统
+         ==========================================================================
+         上面那些 sys:Double 在 XAML 里**用不了**：Margin/Padding 需要 Thickness，
+         写不了 Margin="{StaticResource SpacingMd}"。这就是 Spacing token 在 Views 里
+         引用数为 0 的结构性原因 —— 不是开发者不用，是语言层面用不了。
+         所以这里把常用组合预先物化成 Thickness，给出可直接引用的路径。 -->
+
+    <!-- 均匀内边距 -->
+    <Thickness x:Key="PadXs">4</Thickness>
+    <Thickness x:Key="PadSm">6</Thickness>
+    <Thickness x:Key="PadMd">8</Thickness>
+    <Thickness x:Key="PadLg">12</Thickness>
+    <Thickness x:Key="PadXl">16</Thickness>
+    <Thickness x:Key="PadXxl">24</Thickness>
+
+    <!-- 卡片 / 面板内边距（横向略大于纵向，视觉更稳） -->
+    <Thickness x:Key="PadCardSm">10,8</Thickness>
+    <Thickness x:Key="PadCardMd">12,10</Thickness>
+    <Thickness x:Key="PadCardLg">16,14</Thickness>
+
+    <!-- 控件内边距 -->
+    <Thickness x:Key="PadButtonSm">10,4</Thickness>
+    <Thickness x:Key="PadButtonMd">12,6</Thickness>
+    <Thickness x:Key="PadButtonLg">16,8</Thickness>
+    <Thickness x:Key="PadInput">8,5</Thickness>
+    <Thickness x:Key="PadChip">7,2</Thickness>
+
+    <!-- 垂直堆叠间隔（元素与下一个元素的距离） -->
+    <Thickness x:Key="GapXs">0,0,0,4</Thickness>
+    <Thickness x:Key="GapSm">0,0,0,6</Thickness>
+    <Thickness x:Key="GapMd">0,0,0,8</Thickness>
+    <Thickness x:Key="GapLg">0,0,0,12</Thickness>
+    <Thickness x:Key="GapXl">0,0,0,16</Thickness>
+    <Thickness x:Key="GapXxl">0,0,0,24</Thickness>
+    <!-- 区块小标题与其内容之间 -->
+    <Thickness x:Key="GapSectionTitle">0,0,0,8</Thickness>
+    <!-- 区块与区块之间 -->
+    <Thickness x:Key="GapSection">0,0,0,20</Thickness>
+
+    <!-- 水平间隔（并排元素） -->
+    <Thickness x:Key="GapInlineSm">0,0,6,0</Thickness>
+    <Thickness x:Key="GapInlineMd">0,0,8,0</Thickness>
+    <Thickness x:Key="GapInlineLg">0,0,12,0</Thickness>
+
+    <!-- 页面内容边距 -->
+    <Thickness x:Key="PadPage">32,28</Thickness>
+
     <!-- 阴影（Effect） -->
     <DropShadowEffect x:Key="ShadowSm" Color="Black" Opacity="0.06"
                       BlurRadius="4" ShadowDepth="1" />

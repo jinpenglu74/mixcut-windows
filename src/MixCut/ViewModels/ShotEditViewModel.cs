@@ -198,11 +198,15 @@ public sealed class ShotEditViewModel
 
         if (results.IsEmpty) return;
         await using var db = await _dbFactory.CreateDbContextAsync(ct);
+        // 一次把要改的行全查出来，而不是每个镜头一次主键查询。
+        var shotIds = results.Keys.ToList();
+        var trackedById = await db.PhysicalShots
+            .Where(s => shotIds.Contains(s.Id))
+            .ToDictionaryAsync(s => s.Id, ct);
         foreach (var shot in Shots)
         {
             if (!results.TryGetValue(shot.Id, out var thumb)) continue;
-            var tracked = await db.PhysicalShots.FirstOrDefaultAsync(s => s.Id == shot.Id, ct);
-            if (tracked is not null) tracked.ThumbnailPath = thumb;
+            if (trackedById.TryGetValue(shot.Id, out var tracked)) tracked.ThumbnailPath = thumb;
             shot.ThumbnailPath = thumb;
         }
         await db.SaveChangesAsync(ct);

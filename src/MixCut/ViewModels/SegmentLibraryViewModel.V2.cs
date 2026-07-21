@@ -145,13 +145,52 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
             _cardIndex.Remove(id);
         }
 
+        // 组 VM 每次都是新建的 → 旧的必须逐个 Dispose 退订 DubbingViewModel.VideoStateChanged，
+        // 否则搜索/筛选每跑一次就多留一份僵尸组，配音进度事件会把它们全部唤醒（各自再查一轮库）。
+        foreach (var old in Groups)
+        {
+            old.Dispose();
+        }
+
         // 用增量更新代替整体替换（避免 UI 全量重建）
         ReplaceGroupsInPlace(newGroups);
+
+        // 配音状态批量补齐：组构造时刻意不查库（否则 视频数 × 2 次 SQL），
+        // 这里一次查完再灌回去。fire-and-forget —— 建组本身不必等数据库。
+        _ = RefreshDubStatusForGroupsAsync(newGroups);
 
         var totalCards = newGroups.Sum(g => g.Segments.Count);
         Serilog.Log.Information(
             "[GroupDiag] groups={GroupCount} totalCards={Total} sortByQuality={SQ}",
             newGroups.Count, totalCards, SortByQuality);
+    }
+
+    /// <summary>一次查出所有组的配音状态并灌进各组（替代「每组各查两次」）。</summary>
+    private async Task RefreshDubStatusForGroupsAsync(List<VideoGroupViewModel> groups)
+    {
+        if (_dubbing is null) return;
+        try
+        {
+            // 自建分镜组不显示视频级配音条（dubbing 传的就是 null），不用查。
+            var ids = groups.Where(g => !g.IsUserSegmentGroup)
+                .Select(g => g.VideoId).Distinct().ToList();
+            if (ids.Count == 0) return;
+
+            var snapshot = await _dubbing.LoadDubStatusAsync(ids);
+            foreach (var g in groups)
+            {
+                if (snapshot.TryGetValue(g.VideoId, out var s))
+                {
+                    await g.RefreshDubStatusAsync(s);
+                }
+            }
+            Serilog.Log.Information("[GroupDiag] 配音状态批量预取 videos={Count}（2 次查询）", ids.Count);
+        }
+        catch (Exception ex)
+        {
+            // 配音状态只是设置条上的一行文案，查失败不该影响分镜库可用。
+            Serilog.Log.Warning(ex, "[GroupDiag] 配音状态批量预取失败，设置条文案可能未刷新");
+        }
     }
 
     private void ReplaceGroupsInPlace(List<VideoGroupViewModel> newGroups)
@@ -526,10 +565,12 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     void ISegmentCardHost.RequestDelete(SegmentCardViewModel card)
     {
-        var result = MessageBox.Show(
-            $"删除分镜 {card.SegmentIndexLabel}？删除后可按 Ctrl+Z 撤销。",
-            "确认", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-        if (result != MessageBoxResult.OK) return;
+        var confirmed = Views.Shared.MixCutDialog.Confirm(
+            Application.Current?.MainWindow,
+            $"删除分镜 {card.SegmentIndexLabel}？",
+            "删除后可以按 Ctrl+Z 撤销。",
+            confirmText: "删除", cancelText: "取消", destructive: true, icon: "🗑");
+        if (!confirmed) return;
 
         // P0-10 修：右键单删此前直接删、不入撤销栈，导致删完按 Ctrl+Z 提示「没有可撤销的操作」。
         // 现与批量删除路径对齐：删前快照 → 删除成功才压栈 → Ctrl+Z 调 RestoreSegments 恢复。
@@ -688,6 +729,18 @@ public partial class SegmentLibraryViewModel : ISegmentCardHost
 
     async Task ISegmentCardHost.DeleteReplacedPictureAsync(SegmentCardViewModel card)
     {
+        // 二次确认：删的是用户花了几分钟 + 真金白银用 AI 生成出来的画面，而且视频文件会被物理删除、
+        // 撤销不回来 —— 只能重新计费生成。同一个 VM 里删普通分镜都有确认 + Ctrl+Z 快照，
+        // 这条代价更大的路径原本却是一点即删。
+        var confirmed = Views.Shared.MixCutDialog.Confirm(
+            System.Windows.Application.Current?.MainWindow,
+            "删除这个分镜的 AI 替换画面？",
+            "生成好的替换视频会被永久删除，画面还原为原始素材。\n\n"
+            + "这一步不能撤销，之后想再要就得重新用 AI 生成（重新计费）。",
+            confirmText: "删除替换画面", cancelText: "保留",
+            destructive: true, icon: "🗑");
+        if (!confirmed) return;
+
         await using var db = await _dbFactory.CreateDbContextAsync();
         var seg = await db.Segments.FirstOrDefaultAsync(s => s.Id == card.Segment.Id);
         if (seg is null) return;

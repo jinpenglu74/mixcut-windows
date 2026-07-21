@@ -146,6 +146,7 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(DurationDisplay))]
     [NotifyPropertyChangedFor(nameof(Duration))]
     [NotifyPropertyChangedFor(nameof(StartTimecode))]
+    [NotifyPropertyChangedFor(nameof(StartFrameText))]
     [NotifyPropertyChangedFor(nameof(TimeRangeDisplay))]
     [NotifyPropertyChangedFor(nameof(LastFrameTimecode))]
     private double _startTime;
@@ -154,6 +155,7 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(DurationDisplay))]
     [NotifyPropertyChangedFor(nameof(Duration))]
     [NotifyPropertyChangedFor(nameof(EndTimecode))]
+    [NotifyPropertyChangedFor(nameof(EndFrameText))]
     [NotifyPropertyChangedFor(nameof(TimeRangeDisplay))]
     [NotifyPropertyChangedFor(nameof(LastFrameTimecode))]
     private double _endTime;
@@ -202,6 +204,26 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     [NotifyPropertyChangedFor(nameof(TranscriptActionsVisible))]
     private bool _isHovering;
 
+    /// <summary>
+    /// 这张卡当前是否正在内联播放（播放器已挂上、画面在动）。
+    ///
+    /// 为什么必须存在 VM 而不是直接改控件的 Visibility：卡片容器一旦启用虚拟化复用，
+    /// 「▶ 按钮和时长徽章被隐藏」这种写在可视元素上的局部值会跟着容器漂到另一张卡上，
+    /// 那张卡就永久没有播放按钮和时长 —— 而且只在滚动过特定顺序后才复现，极难查。
+    /// 状态存 VM、可见性走 binding，容器复用时随 DataContext 自动切换，天然免疫。
+    /// （这也是本类顶部「所有视觉状态都存这里」原则的一部分。）
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PlayOverlayVisible))]
+    [NotifyPropertyChangedFor(nameof(DurationBadgeVisible))]
+    private bool _isPlayingInline;
+
+    /// <summary>▶ 播放层是否可见：非多选态、且当前没在播。</summary>
+    public bool PlayOverlayVisible => !IsSelectionMode && !IsPlayingInline;
+
+    /// <summary>时长徽章是否可见：播放时隐藏，避免挡住播放控制栏右侧的总时长。</summary>
+    public bool DurationBadgeVisible => !IsPlayingInline;
+
     /// <summary>是否处于台词内联编辑态（显示 TextBox + 保存/取消）。对齐 mac isEditingText。</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(TranscriptActionsVisible))]
@@ -219,6 +241,7 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
 
     /// <summary>多选模式总开关（父 VM 推下来）。</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PlayOverlayVisible))]
     private bool _isSelectionMode;
 
     /// <summary>序号徽章（视频内编号 #1/#2...）。父 VM 推下来。</summary>
@@ -318,23 +341,54 @@ public sealed partial class SegmentCardViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private void CommitStart(string? text)
-    {
-        if (double.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var v))
-        {
-            _host.SetStartTime(this, v);
-        }
-    }
+    private void CommitStart(string? text) => CommitBoundary(text, isStart: true);
 
     [RelayCommand]
-    private void CommitEnd(string? text)
+    private void CommitEnd(string? text) => CommitBoundary(text, isStart: false);
+
+    /// <summary>
+    /// 提交手输的边界值。**输入的是帧号**（与 ± 按钮的步长单位一致）。
+    ///
+    /// 为什么按帧而不是秒：这两个 ± 按钮走的是 <see cref="FrameStep"/>，一次正好 1 帧；
+    /// 而输入框以前显示/接受的是秒（0.0、13.1），点一下 ± 数字只动 0.04，用户根本对不上
+    /// 「我调的是帧」这件事。issue #7 已经把整个分镜模型重构成帧精确，UI 这里也应当以帧为准。
+    /// 兼容：fps 未知的旧数据无法做帧↔秒换算，此时退回按秒解释输入值。
+    /// </summary>
+    private void CommitBoundary(string? text, bool isStart)
     {
-        if (double.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var v))
+        var fps = _segment.EffectiveFps;
+        double seconds;
+        if (fps > 0)
         {
-            _host.SetEndTime(this, v);
+            if (!int.TryParse(text?.Trim(), System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out var frame))
+            {
+                return;
+            }
+            seconds = Math.Max(0, frame) / fps;
         }
+        else if (!double.TryParse(text, System.Globalization.NumberStyles.Float,
+                     System.Globalization.CultureInfo.InvariantCulture, out seconds))
+        {
+            return;
+        }
+
+        if (isStart) _host.SetStartTime(this, seconds);
+        else _host.SetEndTime(this, seconds);
+    }
+
+    /// <summary>起点帧号（输入框显示值）。fps 未知的旧数据回退成秒，见 <see cref="CommitBoundary"/>。</summary>
+    public string StartFrameText => FrameTextFor(StartTime);
+
+    /// <summary>终点帧号（输入框显示值）。</summary>
+    public string EndFrameText => FrameTextFor(EndTime);
+
+    private string FrameTextFor(double seconds)
+    {
+        var fps = _segment.EffectiveFps;
+        return fps > 0
+            ? ((int)Math.Round(seconds * fps)).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : seconds.ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private static double ParseStep(string? s, double fallback)

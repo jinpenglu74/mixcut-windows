@@ -11,11 +11,17 @@ namespace MixCut.Services.SchemeGeneration;
 /// </summary>
 public static class NarrativeCandidatePool
 {
-    /// <summary>某段的候选池：分镜语义标签 ∩ 段标签 ≠ 空（并集）。</summary>
+    /// <summary>
+    /// 某段的候选池：分镜语义标签 ∩ 段标签 ≠ 空（并集），再按该段的时长区间过滤。
+    /// 时长区间 null=不限（对齐 macOS NarrativeStructureEngine.candidatePool：先标签、后 &gt;=min、&lt;=max）。
+    /// </summary>
     public static List<Segment> CandidatesForSlot(IEnumerable<Segment> segments, NarrativeSlot slot)
     {
         var tags = slot.Tags.ToHashSet();
-        return segments.Where(s => s.SemanticTypes.Any(tags.Contains)).ToList();
+        var pool = segments.Where(s => s.SemanticTypes.Any(tags.Contains));
+        if (slot.MinDuration is { } lo) pool = pool.Where(s => s.Duration >= lo);
+        if (slot.MaxDuration is { } hi) pool = pool.Where(s => s.Duration <= hi);
+        return pool.ToList();
     }
 
     /// <summary>每段送 AI 的候选：质量分降序、再时长降序，取前 <paramref name="n"/>（issue §五.3）。</summary>

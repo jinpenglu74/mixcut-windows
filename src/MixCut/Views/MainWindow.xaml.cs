@@ -178,6 +178,8 @@ public partial class MainWindow : Window
         {
             return;
         }
+        // 换页 = 用户注意力已经离开：停掉任何还在播的内联预览，别让上一页的声音跟到新页面。
+        Components.InlineVideoPlayer.StopAll();
         ContentArea.Content = view;
         var fade = new System.Windows.Media.Animation.DoubleAnimation(0.0, 1.0,
             new Duration(TimeSpan.FromMilliseconds(160)))
@@ -255,6 +257,12 @@ public partial class MainWindow : Window
             _viewLastLoadedProjectId.Remove(NavigationItem.SegmentLibrary);
             _viewLastLoadedProjectId.Remove(NavigationItem.Schemes);
             _viewLastLoadedProjectId.Remove(NavigationItem.Overview);
+            // 自验证锚点：这条链断过一次 —— 缓存这里失效了，但 SegmentLibraryViewV2.LoadProject
+            // 内部另有一句「同项目就 return」把重载吃掉，表现为「分析完切回分镜库看不到新分镜」。
+            // 该守卫已删除；留这行日志，配合 [GroupDiag] 可核对「失效 → 重载」是否真的走通。
+            Serilog.Log.Information(
+                "[RefreshDiag] 分镜数据已变更，失效 分镜库/方案/概览 视图缓存（当前页={Nav}）",
+                _vm.SelectedNavItem);
             if (_vm.SelectedNavItem is NavigationItem.SegmentLibrary
                 or NavigationItem.Schemes
                 or NavigationItem.Overview)
@@ -337,7 +345,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnSettingsClick(object sender, RoutedEventArgs e)
+    private void OnSettingsClick(object sender, RoutedEventArgs e) => OpenSettings();
+
+    /// <summary>
+    /// 打开设置窗口。公开出来是为了让子视图能提供「去设置」的一键入口
+    /// （例如方案页发现没配 API Key 时），而不必各自去拿 AppSettings / ASRService 依赖。
+    /// </summary>
+    public void OpenSettings()
     {
         new SettingsWindow(_settings, _asrService) { Owner = this }.ShowDialog();
     }
@@ -450,12 +464,20 @@ public partial class MainWindow : Window
                     var desc = Infrastructure.UndoStack.UndoManager.Shared.Undo();
                     if (desc is null)
                     {
-                        Views.Shared.ToastCenter.Shared.Show("没有可撤销的操作", Views.Shared.ToastStyle.Info);
+                        Components.ToastService.Show("没有可撤销的操作", Components.ToastStyle.Info);
+                    }
+                    else
+                    {
+                        // 撤销**成功**时原本什么都不显示。恢复的内容常常在视口外（比如删了 20 个分镜后
+                        // 按 Ctrl+Z），用户看不到任何变化，会怀疑没生效而继续按 —— 直到弹出
+                        // 「没有可撤销的操作」才发现自己已经多撤了几步，却不知道撤到哪了。
+                        Components.ToastService.Show($"已撤销：{desc}", Components.ToastStyle.Success);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    Views.Shared.ToastCenter.Shared.Show("撤销失败", Views.Shared.ToastStyle.Error);
+                    Serilog.Log.Error(ex, "[UndoDiag] 撤销失败");
+                    Components.ToastService.Show("撤销失败，数据未改动", Components.ToastStyle.Error);
                 }
                 e.Handled = true;
                 return;
@@ -513,9 +535,27 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 右键项目列表时先选中命中项 —— WPF 的 ListBoxItem 默认不响应右键选中。
+    /// 与「菜单挂在行上 + handler 从行数据取对象」双保险，杜绝「选中 A、右键 B 点删除，删掉 A」的数据事故。
+    /// </summary>
+    private void OnProjectListRightClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (ItemsControl.ContainerFromElement(ProjectList, (DependencyObject)e.OriginalSource) is ListBoxItem item)
+        {
+            item.IsSelected = true;
+            item.Focus();
+        }
+    }
+
+    /// <summary>从右键菜单项取它所属的项目：菜单挂在行的 Grid 上，DataContext 即该行的 Project。</summary>
+    private static Project? ProjectFromMenu(object sender) =>
+        (sender as FrameworkElement)?.DataContext as Project;
+
     private void OnRenameProject(object sender, RoutedEventArgs e)
     {
-        if (ProjectList.SelectedItem is not Project project)
+        // 用菜单所属行的数据，而不是 SelectedItem（后者在右键别的行时会指向错误对象）。
+        if (ProjectFromMenu(sender) is not Project project)
         {
             return;
         }
@@ -529,14 +569,20 @@ public partial class MainWindow : Window
 
     private void OnDeleteProject(object sender, RoutedEventArgs e)
     {
-        if (ProjectList.SelectedItem is not Project project)
+        // 同上：取菜单所属行的项目，绝不用 SelectedItem（删错项目 = 丢掉该项目全部素材/分镜/方案）。
+        if (ProjectFromMenu(sender) is not Project project)
         {
             return;
         }
-        var confirm = MessageBox.Show(
-            $"确定要删除项目「{project.Name}」吗？\n所有视频、分镜和方案数据都将被删除，此操作不可恢复。",
-            "确认删除项目", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-        if (confirm == MessageBoxResult.OK)
+        // 破坏性确认走自绘对话框：红色主按钮 + 动词文案 + 默认焦点在「取消」（防习惯性回车误删）。
+        // 并把代价说清楚 —— 用户有权在按下删除前知道自己会失去什么。
+        var cost = $"{project.VisibleVideoCount} 个视频 · {project.SegmentCount} 个分镜 · {project.SchemeCount} 个方案";
+        var confirmed = Shared.MixCutDialog.Confirm(
+            this,
+            $"删除项目「{project.Name}」？",
+            $"将一并删除：{cost}。\n此操作不可恢复。",
+            confirmText: "删除项目", cancelText: "取消", destructive: true, icon: "⚠");
+        if (confirmed)
         {
             _vm.ProjectVM.DeleteProjectCommand.Execute(project);
             _vm.ProjectVM.SelectedProject = null;

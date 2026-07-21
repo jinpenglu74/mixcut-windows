@@ -30,11 +30,17 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="110" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
+                    <!-- Ctrl+Z 是全应用唯一的撤销入口（Toast 上那个「撤销」按钮 6 秒就消失），
+                         原本却是唯一没被写进这份帮助的快捷键。 -->
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Ctrl + Z"
+                               FontFamily="{StaticResource FontFamilyMono}" FontSize="11" Foreground="{StaticResource AccentBlueBrush}" />
+                    <TextBlock Grid.Row="3" Grid.Column="1" Text="撤销上一步删除（分镜 / 方案 / 策略）" FontSize="11" />
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Ctrl + N"
                                FontFamily="{StaticResource FontFamilyMono}" FontSize="11" Foreground="{StaticResource AccentBlueBrush}" />
                     <TextBlock Grid.Row="0" Grid.Column="1" Text="新建项目" FontSize="11"
@@ -45,7 +51,8 @@
                                Margin="0,0,0,4" />
                     <TextBlock Grid.Row="2" Grid.Column="0" Text="Ctrl + /"
                                FontFamily="{StaticResource FontFamilyMono}" FontSize="11" Foreground="{StaticResource AccentBlueBrush}" />
-                    <TextBlock Grid.Row="2" Grid.Column="1" Text="显示快捷键帮助" FontSize="11" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Text="显示快捷键帮助" FontSize="11"
+                               Margin="0,0,0,4" />
                 </Grid>
 
                 <TextBlock Text="工作区导航" FontSize="11" FontWeight="SemiBold"

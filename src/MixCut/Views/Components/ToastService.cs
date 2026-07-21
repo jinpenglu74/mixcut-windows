@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
+using MixCut.Infrastructure;
 
 namespace MixCut.Views.Components;
 
@@ -151,9 +152,9 @@ public static class ToastService
 
     private static (Brush Bg, Brush Fg) ResolveColors(ToastStyle style) => style switch
     {
-        ToastStyle.Success => (new SolidColorBrush(Color.FromRgb(0x2E, 0x8B, 0x57)), Brushes.White),
-        ToastStyle.Warning => (new SolidColorBrush(Color.FromRgb(0xC0, 0x6F, 0x00)), Brushes.White),
-        ToastStyle.Error => (new SolidColorBrush(Color.FromRgb(0xD3, 0x3A, 0x3A)), Brushes.White),
+        ToastStyle.Success => (Theme.Success, Brushes.White),
+        ToastStyle.Warning => (Theme.Warning, Brushes.White),
+        ToastStyle.Error => (Theme.Danger, Brushes.White),
         _ => (new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x33)), Brushes.White),
     };
 

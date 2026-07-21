@@ -2,8 +2,11 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              Background="White">
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="32" MaxWidth="620" HorizontalAlignment="Stretch">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <!-- MaxWidth 用于限制超宽屏下的阅读宽度，配 Left 对齐让内容贴近导航栏。
+             原来是 MaxWidth=620 + Stretch：1519px 宽的窗口内容被锁死在 620px，
+             中间留出 500px 空白，内部元素又撑破 620 导致右侧（质量下拉、已选计数）被裁掉。 -->
+        <StackPanel Margin="32,28" MaxWidth="1040" HorizontalAlignment="Left">
             <TextBlock Text="导出视频" FontSize="22" FontWeight="Bold" Margin="0,0,0,18" />
 
             <!-- 概览 -->
@@ -132,18 +135,18 @@
                 </StackPanel>
             </Border>
 
+            <!-- 对齐 macOS：**只有一个导出按钮**。「普通导出」本就是「组合数=1」的特例 ——
+                 没做配音改写时每个分镜只有「原声」1 档，排列组合 = 1 条/方案（等同原普通导出）；
+                 做过配音改写后自动按「原声 + 各改写版」排列组合出多条差异化视频。用户不必选走哪种。
+                 条数与说明由代码按当前选择实时更新（见 UpdateExportButtonText）。 -->
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                <Button x:Name="ExportAllButton" Content="📦  导出选中的 0 个"
+                <Button x:Name="ExportButton" Content="请先选择方案"
                         Padding="14,8" IsEnabled="False"
                         Background="#9333EA" Foreground="White" BorderThickness="0"
-                        Cursor="Hand" Click="OnExportAllClick" />
-                <!-- v0.5.0 配音组合导出：按每分镜「原声+各改写版」笛卡尔积，逐条出片 -->
-                <Button x:Name="ExportDubButton" Content="🎤  导出配音组合"
-                        Padding="14,8" Margin="10,0,0,0" IsEnabled="False"
-                        Background="#1D6BE5" Foreground="White" BorderThickness="0"
-                        Cursor="Hand" Click="OnExportDubCombosClick"
-                        ToolTip="按每个分镜的「原声 + 各改写版」全部排列组合，逐条生成差异化配音视频" />
+                        Cursor="Hand" Click="OnExportClick" />
             </StackPanel>
+            <TextBlock x:Name="ExportHintText" FontSize="11" Margin="0,6,0,0"
+                       Foreground="{StaticResource TextTertiaryBrush}" TextWrapping="Wrap" />
 
             <!-- 进度（QW-11：标题行右侧放「取消」按钮，长任务可随时中断，告别失控感） -->
             <StackPanel x:Name="ProgressSection" Visibility="Collapsed" Margin="0,18,0,0">

@@ -49,7 +49,7 @@
                     <ItemsControl.ItemTemplate>
                         <DataTemplate>
                             <Border Background="#2D2D33" CornerRadius="3" Padding="4,1" Margin="0,0,3,3">
-                                <TextBlock Text="{Binding}" Foreground="#DCDCDC" FontSize="9"/>
+                                <TextBlock Text="{Binding}" Foreground="#DCDCDC" FontSize="{StaticResource FontSizeCaption}"/>
                             </Border>
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>

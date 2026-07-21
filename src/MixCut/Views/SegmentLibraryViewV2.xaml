@@ -13,12 +13,14 @@
              mc:Ignorable="d"
              Background="{StaticResource BgPrimaryBrush}">
     <UserControl.Resources>
-        <!-- 对齐 mac：卡片改横向双栏（左缩略图+控件 | 右台词），故变宽变矮。 -->
-        <sys:Double x:Key="SegmentCardWidth">474</sys:Double>
-        <sys:Double x:Key="SegmentCardHeight">660</sys:Double>
-        <!-- 卡片内满宽 9:16，避免视频缩在大面积空白中。 -->
-        <sys:Double x:Key="SegmentCardThumbWidth">210</sys:Double>
-        <sys:Double x:Key="SegmentCardThumbHeight">373</sys:Double>
+        <!-- 卡片尺寸对齐 mac（LazyVGrid adaptive 360~460、左栏固定 200、缩略图 200×355.6）。
+             之前是 474×660：宽多 74、高多 140，全屏下一行放不下几张、一屏看不到一整行，
+             用户反馈「全屏还只有 1 列、大片空白」的直接原因。 -->
+        <sys:Double x:Key="SegmentCardWidth">400</sys:Double>
+        <sys:Double x:Key="SegmentCardHeight">586</sys:Double>
+        <!-- 9:16 竖屏画面，宽度对齐 mac 左栏的 200。 -->
+        <sys:Double x:Key="SegmentCardThumbWidth">200</sys:Double>
+        <sys:Double x:Key="SegmentCardThumbHeight">356</sys:Double>
 
         <Style x:Key="FrameStepButtonStyle" TargetType="Button">
             <Setter Property="Width" Value="28" />
@@ -59,9 +61,11 @@
         <!-- ========== 顶部工具栏 ========== -->
         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
             <Grid Margin="0,0,0,8">
+                <!-- 这里原本还有一个「网格 / 列表」下拉：它写的 IsGridView 在本视图里从没被读过
+                     （只有已废弃的 V1 视图读），选「列表」什么都不会发生。假开关比少一个功能更伤信任，
+                     已删除。真要做列表视图时，连同 ItemsPanel 的实际切换一起做。 -->
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Border Grid.Column="0" Background="{StaticResource BgQuaternaryBrush}"
@@ -87,13 +91,7 @@
                     </Grid>
                 </Border>
 
-                <ComboBox Grid.Column="1" x:Name="ViewModeCombo" Width="86" Margin="8,0,0,0"
-                          Padding="6,4" SelectionChanged="OnViewModeChanged">
-                    <ComboBoxItem Content="网格" IsSelected="True" />
-                    <ComboBoxItem Content="列表" />
-                </ComboBox>
-
-                <ComboBox Grid.Column="2" x:Name="SortCombo" Width="96" Margin="8,0,0,0"
+                <ComboBox Grid.Column="1" x:Name="SortCombo" Width="96" Margin="8,0,0,0"
                           Padding="6,4" SelectionChanged="OnSortChanged">
                     <ComboBoxItem Content="按时间" IsSelected="True" />
                     <ComboBoxItem Content="按质量" />
@@ -450,14 +448,15 @@
                                 </Grid.ColumnDefinitions>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />  <!-- 缩略图 -->
-                                    <RowDefinition Height="Auto" />  <!-- 标签 -->
-                                    <RowDefinition Height="Auto" />  <!-- 位置/质量 -->
+                                    <!-- 语义标签 + 位置 + 质量分**同一行**（对齐 mac：三者共处一个 FlowLayout）。
+                                         原本拆成两行，白占一行高度。 -->
+                                    <RowDefinition Height="Auto" />  <!-- 标签 + 位置 + 质量 -->
                                     <RowDefinition Height="Auto" />  <!-- 字幕处理（P3） -->
-                                    <RowDefinition Height="Auto" />  <!-- 边界微调 -->
+                                    <RowDefinition Height="Auto" />  <!-- 帧边界 IN/OUT（常驻紧凑行） -->
                                     <RowDefinition Height="*" />     <!-- 弹性占位（底部）：吸收余量，台词跨全高 -->
                                 </Grid.RowDefinitions>
                                 <!-- 左右分隔线（跨全高） -->
-                                <Rectangle Grid.Column="1" Grid.RowSpan="6" Width="1" Margin="8,4"
+                                <Rectangle Grid.Column="1" Grid.RowSpan="4" Width="1" Margin="8,4"
                                            Fill="{StaticResource BorderSubtleBrush}" />
                                 <!-- 缩略图区 -->
                                 <Border Grid.Row="0"
@@ -494,13 +493,15 @@
                                             </TextBlock>
                                         </Border>
 
-                                        <!-- 时长 badge（右下，走 binding 自动联动）。hover 播放时隐藏，
-                                             避免挡住播放控制栏右侧的总时长数字（OnCardMouseEnter/Leave 切换）。 -->
+                                        <!-- 时长 badge（右下）。播放时隐藏，避免挡住播放控制栏右侧的总时长数字。
+                                             显隐走 VM 的 DurationBadgeVisible 绑定，不由后台代码直接改 Visibility
+                                             —— 后者在容器复用时会把「已隐藏」漂到别的卡上（见 VM 里的说明）。 -->
                                         <Border x:Name="CardDurationBadge"
                                                 Background="#A0000000" CornerRadius="4"
                                                 Padding="6,1"
                                                 HorizontalAlignment="Right" VerticalAlignment="Bottom"
                                                 Margin="0,0,6,6"
+                                                Visibility="{Binding DurationBadgeVisible, Converter={StaticResource BoolToVisibility}}"
                                                 ToolTip="{Binding TimeRangeDisplay}">
                                             <TextBlock Text="{Binding DurationDisplay}"
                                                        Foreground="White" FontSize="10"
@@ -531,15 +532,14 @@
                                         </Border>
 
                                         <!-- 缩略图整块点击 =（重新）播放（§H：整张缩略图都是点击区，不止小 ▶）。
-                                             hover 进卡 0.35s 也自动起播；但 hover 有盲区——已在卡内、播完 / 调帧后
-                                             MouseEnter 不会再触发，用户点播放「没反应」，必须移出再移回。故补 Background=Transparent
-                                             + MouseLeftButtonUp 显式点击入口兜底（StartHoverPlay 内已 guard 正在播则忽略）。
+                                             Background=Transparent 让整块参与命中测试（否则只有中间那个小 ▶ 可点，
+                                             用户点缩略图别处会以为「点了不播」）。
                                              OnCardClicked 走 PreviewMouseLeftButtonDown 隧道阶段先收到、仍能选中弹变体池，两者不冲突。
-                                             播放时由 StartHoverPlay 隐藏、播完/停止由 Idle 还原。多选模式隐藏（点击用于勾选）。
-                                             x:Name=PlayOverlay 供后台代码定位显隐。 -->
+                                             显隐 = 非多选态且当前没在播（多选态点击用于勾选），全部走 VM 绑定，
+                                             后台代码不再直接改 Visibility —— 容器复用时那会漂到别的卡上。 -->
                                         <Grid x:Name="PlayOverlay" Background="Transparent" Cursor="Hand"
                                               MouseLeftButtonUp="OnPlayOverlayClick"
-                                              Visibility="{Binding IsSelectionMode, Converter={StaticResource InverseBoolToVisibility}}">
+                                              Visibility="{Binding PlayOverlayVisible, Converter={StaticResource BoolToVisibility}}">
                                             <Border Background="#90000000" CornerRadius="999" Width="46" Height="46"
                                                     HorizontalAlignment="Center" VerticalAlignment="Center">
                                                 <TextBlock Text="▶" Foreground="White" FontSize="16"
@@ -592,26 +592,26 @@
                                     </Grid>
                                 </Border>
 
-                                <!-- 标签 + 位置 + 质量分 -->
-                                <ItemsControl Grid.Row="1" ItemsSource="{Binding SemanticTypes}" Margin="0,6,0,0">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel />
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <Border CornerRadius="999" Padding="7,2" Margin="0,0,4,4"
-                                                    Background="{Binding ., Converter={StaticResource SemanticTypeToTintBrush}}">
-                                                <TextBlock Text="{Binding ., Converter={StaticResource SemanticTypeToLabel}}"
-                                                           FontSize="10" FontWeight="SemiBold"
-                                                           Foreground="{Binding ., Converter={StaticResource SemanticTypeToBrush}}" />
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-
-                                <WrapPanel Grid.Row="2">
+                                <!-- 语义标签 + 位置 + 质量分：**同一个 WrapPanel**，胶囊连续流动（对齐 mac FlowLayout）。
+                                     语义标签少时三者在一行；多时自然折行，不会像拆两行那样恒定多占一行。 -->
+                                <WrapPanel Grid.Row="1" Margin="0,6,0,0">
+                                    <ItemsControl ItemsSource="{Binding SemanticTypes}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border CornerRadius="999" Padding="7,2" Margin="0,0,4,4"
+                                                        Background="{Binding ., Converter={StaticResource SemanticTypeToTintBrush}}">
+                                                    <TextBlock Text="{Binding ., Converter={StaticResource SemanticTypeToLabel}}"
+                                                               FontSize="10" FontWeight="SemiBold"
+                                                               Foreground="{Binding ., Converter={StaticResource SemanticTypeToBrush}}" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
                                     <Border CornerRadius="999" Padding="7,2" Margin="0,0,4,4"
                                             Background="#15888888">
                                         <TextBlock Text="{Binding PositionType, Converter={StaticResource PositionTypeToLabel}}"
@@ -628,7 +628,7 @@
                                 </WrapPanel>
 
                                 <!-- 字幕处理（P3）：保留原声 + 三胶囊 + 遮挡区应用 -->
-                                <StackPanel Grid.Row="3" Margin="0,6,0,0">
+                                <StackPanel Grid.Row="2" Margin="0,6,0,0">
                                     <!-- 保留原声开关 -->
                                     <CheckBox IsChecked="{Binding IsVoiceLocked, Mode=OneWay}" Command="{Binding ToggleVoiceLockCommand}"
                                               Cursor="Hand" Content="🔒 保留原声"
@@ -637,7 +637,7 @@
                                     <!-- 字幕处理（未锁定才显示） -->
                                     <StackPanel Margin="0,4,0,0"
                                                 Visibility="{Binding IsVoiceLocked, Converter={StaticResource InverseBoolToVisibility}}">
-                                        <TextBlock Text="字幕处理" FontSize="9" FontWeight="Medium"
+                                        <TextBlock Text="字幕处理" FontSize="{StaticResource FontSizeCaption}" FontWeight="Medium"
                                                    Foreground="{StaticResource TextTertiaryBrush}" Margin="0,0,0,3" />
                                         <WrapPanel>
                                             <Button Content="直接烧录" Command="{Binding SetTreatmentCommand}" CommandParameter="Direct"
@@ -736,14 +736,16 @@
                                              绑定全局共享 SubtitleFontState（所有卡片 + 导出烧录共用一份），对齐 mac 字号滑条。 -->
                                         <StackPanel Margin="0,8,0,0">
                                             <DockPanel LastChildFill="False" Margin="0,0,0,2">
-                                                <TextBlock DockPanel.Dock="Left" Text="字幕字号" FontSize="9" FontWeight="Medium"
+                                                <TextBlock DockPanel.Dock="Left" Text="字幕字号" FontSize="{StaticResource FontSizeCaption}" FontWeight="Medium"
                                                            Foreground="{StaticResource TextTertiaryBrush}" />
-                                                <TextBlock DockPanel.Dock="Right" FontSize="9"
+                                                <TextBlock DockPanel.Dock="Right" FontSize="{StaticResource FontSizeCaption}"
                                                            Foreground="{StaticResource TextTertiaryBrush}"
                                                            Text="{Binding PercentText, Source={x:Static vm:SubtitleFontState.Shared}}" />
                                             </DockPanel>
-                                            <!-- Min/Max = SubtitleFontSize.MinRatio/MaxRatio (0.030~0.085) -->
-                                            <Slider Minimum="0.030" Maximum="0.085" SmallChange="0.002" LargeChange="0.005"
+                                            <!-- Min/Max = SubtitleFontSize.MinRatio/MaxRatio (0.030~0.085)
+                                                 Height=18 对齐 mac 的 .controlSize(.mini)：默认 WPF Slider 约 26px 高，
+                                                 在 200 宽的窄左栏里显得笨重，且每张卡都有一个。 -->
+                                            <Slider Height="18" Minimum="0.030" Maximum="0.085" SmallChange="0.002" LargeChange="0.005"
                                                     Value="{Binding Ratio, Source={x:Static vm:SubtitleFontState.Shared}, Mode=TwoWay}"
                                                     ToolTip="字幕字号全片统一。拖动时上方画面里的示例字幕会实时变化，可与原视频字幕对比大小。" />
                                         </StackPanel>
@@ -751,7 +753,7 @@
                                 </StackPanel>
 
                                 <!-- 台词块（右列，跨全高常显；对齐 mac：大而可读，hover 显 ✏ 编辑 / ↻ 重识别） -->
-                                <Border Grid.Column="2" Grid.RowSpan="6"
+                                <Border Grid.Column="2" Grid.RowSpan="4"
                                         Background="{StaticResource BgSubtleBrush}"
                                         BorderBrush="{StaticResource BorderSubtleBrush}"
                                         BorderThickness="1"
@@ -787,12 +789,12 @@
                                     <DockPanel>
                                         <Grid DockPanel.Dock="Top" Margin="0,0,0,3">
                                             <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                <TextBlock Text="💬" FontSize="9"
+                                                <TextBlock Text="💬" FontSize="{StaticResource FontSizeCaption}"
                                                            VerticalAlignment="Center" Margin="0,0,4,0" />
                                                 <TextBlock Text="台词" FontSize="10" FontWeight="SemiBold"
                                                            Foreground="{StaticResource TextTertiaryBrush}"
                                                            VerticalAlignment="Center" />
-                                                <TextBlock FontSize="9"
+                                                <TextBlock FontSize="{StaticResource FontSizeCaption}"
                                                            FontFamily="{StaticResource FontFamilyMono}"
                                                            Foreground="{StaticResource TextQuaternaryBrush}"
                                                            VerticalAlignment="Center" Margin="2,0,0,0">
@@ -807,6 +809,12 @@
                                                 <Button Content="↻" Command="{Binding ReRecognizeCommand}"
                                                         Style="{StaticResource TranscriptIconBtn}"
                                                         ToolTip="用阿里云 ASR 重新识别该分镜台词（替换原台词）" />
+                                                <!-- 快速编辑菜单（语义类型 / 位置类型 / 拆分 / 删除等）。
+                                                     原本在帧边界区底部单占一行，为压缩卡片高度移到这里与 ✏ ↻ 并列。 -->
+                                                <Button x:Name="QuickEditBtn" Content="⋯"
+                                                        Style="{StaticResource TranscriptIconBtn}"
+                                                        Tag="{Binding}" Click="OnQuickEditClick"
+                                                        ToolTip="更多操作（语义类型 / 位置 / 拆分 / 删除）" />
                                             </StackPanel>
                                             <!-- 编辑态：✓ 保存 + ✕ 取消 -->
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center"
@@ -861,21 +869,20 @@
                                     </DockPanel>
                                 </Border>
 
-                                <!-- 商用级帧边界面板：时间码清楚、按钮可点、最后一帧可核对。 -->
-                                <Border Grid.Row="4" Margin="0,8,0,0" Padding="8"
-                                        Background="{StaticResource BgSubtleBrush}"
-                                        BorderBrush="{StaticResource BorderSubtleBrush}"
-                                        BorderThickness="1" CornerRadius="8">
+                                <!-- 帧边界 IN/OUT：**常驻、紧凑两行**。
+                                     演进过程（别再走回头路）：
+                                     ① 最早是带「帧边界」标题 + 边框 + 末帧行的大面板，~150px，把卡片撑到 660 高
+                                        → 全屏一屏看不到一整行，用户反馈「大片空白只有一列」；
+                                     ② 试过对齐 mac 的「hover/选中才显示」，但 mac 的展开态只有 24pt、
+                                        Windows 这块有 ~100px，无论做等高占位（高度白还给卡片、等于没瘦身）
+                                        还是做浮层（会盖住下面的字幕处理，用户明确不接受）都不成立；
+                                     ③ 最终：砍掉标题行与末帧行（信息移进 ToolTip）、去掉边框背景，压成两行 ~62px 常驻。
+                                        既不遮挡任何内容，又比最初省下 ~90px。 -->
+                                <Grid Grid.Row="3" Margin="0,6,0,0">
+                                <Border Padding="0"
+                                        Background="Transparent"
+                                        BorderThickness="0">
                                     <StackPanel>
-                                        <Grid Margin="0,0,0,6">
-                                            <TextBlock Text="帧边界" FontSize="11" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource TextPrimaryBrush}" />
-                                            <TextBlock HorizontalAlignment="Right"
-                                                       Text="{Binding FrameRateDisplay}"
-                                                       FontSize="9"
-                                                       Foreground="{StaticResource TextQuaternaryBrush}" />
-                                        </Grid>
-
                                         <Grid Margin="0,0,0,5">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="28" />
@@ -883,22 +890,23 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="28" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="IN" FontSize="9" FontWeight="Bold"
+                                            <TextBlock Text="IN" FontSize="{StaticResource FontSizeCaption}" FontWeight="Bold"
                                                        Foreground="{StaticResource AccentBlueBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center"
+                                                       ToolTip="起点帧号。− / + 每次调 1 帧" />
                                             <Button Grid.Column="1" Content="−"
                                                     Style="{StaticResource FrameStepButtonStyle}"
                                                     ToolTip="起点向前一帧"
                                                     Command="{Binding AdjustStartCommand}"
                                                     CommandParameter="-1" />
-                                            <!-- 中间时间既是「显示当前起点秒数」也可**手动输入**（对齐旧版本被误删的小功能）：
-                                                 直接键入秒数（如 12.5）→ 回车 / 失焦生效（走 OnStartLostFocus→CommitStart）。
-                                                 − / + 按帧微调也会 OneWay 刷新这里。ToolTip 给出精确时间码，兼顾输入方便与帧信息。 -->
+                                            <!-- 中间显示**帧号**，也可手动输入帧号 → 回车 / 失焦生效（OnStartLostFocus→CommitStart）。
+                                                 单位必须与 −/+ 一致：这两个按钮一次调 1 帧，若这里显示秒，点一下只动 0.04，
+                                                 用户完全对不上自己在调什么。ToolTip 给剪映式时间码（时:分:秒:帧）。 -->
                                             <Border Grid.Column="2" Height="28" Margin="5,0"
                                                     Background="White"
                                                     BorderBrush="{StaticResource BorderPrimaryBrush}"
                                                     BorderThickness="1" CornerRadius="6">
-                                                <TextBox Text="{Binding StartTime, Mode=OneWay, StringFormat={}{0:F1}}"
+                                                <TextBox Text="{Binding StartFrameText, Mode=OneWay}"
                                                          Tag="{Binding}"
                                                          LostKeyboardFocus="OnStartLostFocus"
                                                          KeyDown="OnStartKeyDown"
@@ -925,31 +933,41 @@
                                                 <ColumnDefinition Width="*" />
                                                 <ColumnDefinition Width="28" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="OUT" FontSize="9" FontWeight="Bold"
+                                            <TextBlock Text="OUT" FontSize="{StaticResource FontSizeCaption}" FontWeight="Bold"
                                                        Foreground="{StaticResource AccentBlueBrush}"
-                                                       VerticalAlignment="Center" />
+                                                       VerticalAlignment="Center"
+                                                       ToolTip="终点帧号（不含该帧）。− / + 每次调 1 帧" />
                                             <Button Grid.Column="1" Content="−"
                                                     Style="{StaticResource FrameStepButtonStyle}"
                                                     ToolTip="终点向前一帧"
                                                     Command="{Binding AdjustEndCommand}"
                                                     CommandParameter="-1" />
-                                            <!-- 终点同样可手动输入秒数（回车 / 失焦生效，走 OnEndLostFocus→CommitEnd）；结束边界不含，实际末帧见下方。 -->
+                                            <!-- 终点同样可手动输入**帧号**（回车 / 失焦生效，走 OnEndLostFocus→CommitEnd）；
+                                                 结束边界不含该帧，实际末帧见 ToolTip。 -->
                                             <Border Grid.Column="2" Height="28" Margin="5,0"
                                                     Background="White"
                                                     BorderBrush="{StaticResource BorderPrimaryBrush}"
                                                     BorderThickness="1" CornerRadius="6">
-                                                <TextBox Text="{Binding EndTime, Mode=OneWay, StringFormat={}{0:F1}}"
+                                                <TextBox Text="{Binding EndFrameText, Mode=OneWay}"
                                                          Tag="{Binding}"
                                                          LostKeyboardFocus="OnEndLostFocus"
                                                          KeyDown="OnEndKeyDown"
-                                                         ToolTip="{Binding EndTimecode}"
                                                          FontFamily="{StaticResource FontFamilyMono}"
                                                          FontSize="10" FontWeight="SemiBold"
                                                          Foreground="{StaticResource TextPrimaryBrush}"
                                                          Background="Transparent" BorderThickness="0"
                                                          TextAlignment="Center"
                                                          VerticalContentAlignment="Center"
-                                                         VerticalAlignment="Stretch" />
+                                                         VerticalAlignment="Stretch">
+                                                    <!-- 末帧时间码 + 帧率原本占卡片一整行，压缩高度后移进这里，悬停即见 -->
+                                                    <TextBox.ToolTip>
+                                                        <TextBlock>
+                                                            <Run Text="终点 " /><Run Text="{Binding EndTimecode, Mode=OneWay}" /><LineBreak />
+                                                            <Run Text="结束边界不含最后一帧，实际停在 " /><Run Text="{Binding LastFrameTimecode, Mode=OneWay}" /><LineBreak />
+                                                            <Run Text="{Binding FrameRateDisplay, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                    </TextBox.ToolTip>
+                                                </TextBox>
                                             </Border>
                                             <Button Grid.Column="3" Content="+"
                                                     Style="{StaticResource FrameStepButtonStyle}"
@@ -958,28 +976,12 @@
                                                     CommandParameter="1" />
                                         </Grid>
 
-                                        <Grid Margin="0,7,0,0">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock FontSize="9"
-                                                       Foreground="{StaticResource TextTertiaryBrush}">
-                                                <Run Text="停在最后一帧  " />
-                                                <Run Text="{Binding LastFrameTimecode, Mode=OneWay}"
-                                                     FontFamily="{StaticResource FontFamilyMono}"
-                                                     FontWeight="SemiBold" />
-                                            </TextBlock>
-                                            <Button x:Name="QuickEditBtn" Grid.Column="1"
-                                                    HorizontalAlignment="Right"
-                                                    Content="更多"
-                                                    Style="{StaticResource GhostButtonStyle}"
-                                                    Padding="6,1" FontSize="9"
-                                                    Tag="{Binding}"
-                                                    Click="OnQuickEditClick" />
-                                        </Grid>
+                                        <!-- 原本这里还有一行「末帧 00:13:01 · 24 fps」+「更多」按钮，为压缩高度已移走：
+                                             末帧时间码与帧率进了 OUT 输入框的 ToolTip（悬停即见），
+                                             「更多」菜单移到台词面板 header，与 ✏ / ↻ 并列。 -->
                                     </StackPanel>
                                 </Border>
+                                </Grid>
                             </Grid>
                         </Border>
                                         </DataTemplate>

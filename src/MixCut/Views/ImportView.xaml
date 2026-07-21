@@ -191,7 +191,7 @@
                                         <Border Background="{Binding PipelineBackground}" CornerRadius="6"
                                                 Padding="6,3" Margin="0,6,0,0" HorizontalAlignment="Left"
                                                 Visibility="{Binding PipelineVisibility}">
-                                            <TextBlock Text="{Binding PipelineText}" FontSize="9"
+                                            <TextBlock Text="{Binding PipelineText}" FontSize="{StaticResource FontSizeCaption}"
                                                        Foreground="#333" FontWeight="SemiBold" />
                                         </Border>
 
@@ -270,7 +270,7 @@
                                                 <TextBlock Text="台词" FontSize="10" FontWeight="SemiBold"
                                                            Foreground="#888" VerticalAlignment="Center" />
                                                 <TextBlock Text="{Binding TranscriptCharText}"
-                                                           FontSize="9" Foreground="#AAA"
+                                                           FontSize="{StaticResource FontSizeCaption}" Foreground="#AAA"
                                                            FontFamily="Consolas, monospace"
                                                            VerticalAlignment="Center" Margin="5,1,0,0" />
                                             </StackPanel>
@@ -297,7 +297,7 @@
                                                 Visibility="{Binding AsrAbnormalHintVisibility}"
                                                 Background="#FFF7E8" CornerRadius="4"
                                                 Padding="6,3" Margin="0,0,0,4">
-                                            <TextBlock FontSize="9" Foreground="#7A5800"
+                                            <TextBlock FontSize="{StaticResource FontSizeCaption}" Foreground="#7A5800"
                                                        TextWrapping="Wrap"
                                                        Text="⚠ 分句较粗，可点击右上「重做」重新识别" />
                                         </Border>
@@ -335,7 +335,7 @@
                                                                 <ColumnDefinition Width="*" />
                                                             </Grid.ColumnDefinitions>
                                                             <TextBlock Grid.Column="0" Text="{Binding Time}"
-                                                                       FontSize="9" Foreground="#BBB"
+                                                                       FontSize="{StaticResource FontSizeCaption}" Foreground="#BBB"
                                                                        FontFamily="Consolas, monospace"
                                                                        TextAlignment="Right"
                                                                        Margin="0,1,4,0" />

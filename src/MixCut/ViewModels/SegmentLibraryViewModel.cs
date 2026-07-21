@@ -369,14 +369,10 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
         try
         {
             using var tx = _context.Database.BeginTransaction();
-            foreach (var seg in segs)
-            {
-                var tracked = _context.Segments.FirstOrDefault(s => s.Id == seg.Id);
-                if (tracked is not null)
-                {
-                    _context.Segments.Remove(tracked);
-                }
-            }
+            // 一次查全部待删行，而不是每个分镜发一次主键 SELECT ——「全选 → 删除」在上百分镜的
+            // 项目里就是上百次串行往返，用户看到的是点完删除后界面顿住。
+            var tracked = _context.Segments.Where(s => idsToDelete.Contains(s.Id)).ToList();
+            _context.Segments.RemoveRange(tracked);
             _context.SaveChanges();
             tx.Commit();
         }
@@ -609,6 +605,9 @@ public partial class SegmentLibraryViewModel : ObservableObject, IDisposable
     public void ResetFilter()
     {
         Filter = new SegmentFilter();
+        // 排序也属于「当前视图的筛选状态」，切项目时一并归位，
+        // 否则新项目会沿用上个项目的「按质量排序」而工具栏下拉显示的却是「按时间」。
+        SortByQuality = false;
         ApplyFilter();
     }
 

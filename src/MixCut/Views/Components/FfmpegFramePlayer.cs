@@ -317,6 +317,13 @@ public class FfmpegFramePlayer : Image
         var opened = false;
         var coldSw = Stopwatch.StartNew(); // 测「点击→首帧」冷启动延迟，自验证用
 
+        // 性能：帧缓冲**循环外分配一次并复用**。单帧 w*h*4（竖屏 560×996 ≈ 2.2MB）远超 85KB 的
+        // 大对象堆阈值，若每帧 new 一次 = 25fps 下每秒往 LOH 扔 ~55MB，逼出频繁 Gen2/LOH 回收，
+        // 而 LOH 回收是 stop-the-world 的 —— 表现为播放时整个界面周期性卡顿（不只是播放器）。
+        // 复用安全的前提：下面是**同步** Dispatcher.Invoke，WritePixels 拷完像素才返回，
+        // 缓冲不会在 UI 线程读它的同时被下一帧覆写。改成 BeginInvoke 就必须回退成每帧新分配。
+        var buf = new byte[frameBytes];
+
         try
         {
             while (!_stop)
@@ -339,7 +346,6 @@ public class FfmpegFramePlayer : Image
                     break;
                 }
 
-                var buf = new byte[frameBytes];
                 if (!ReadFull(stream, buf, frameBytes))
                 {
                     break; // EOF / 不足一帧 → 正常结束

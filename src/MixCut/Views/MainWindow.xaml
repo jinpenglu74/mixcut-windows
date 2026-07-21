@@ -109,11 +109,25 @@
                         <ListBox x:Name="ProjectList" BorderThickness="0" Background="Transparent"
                                  SelectionChanged="OnProjectSelected"
                                  MouseDoubleClick="OnProjectDoubleClick"
+                                 PreviewMouseRightButtonDown="OnProjectListRightClick"
                                  ItemContainerStyle="{StaticResource SidebarListBoxItemStyle}"
                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid>
+                                    <!-- Background=Transparent：让整行（含空白处）都能命中右键。
+                                         菜单挂在行上而不是 ListBox 上 —— 挂 ListBox 时 handler 只能读 SelectedItem，
+                                         会出「选中 A、右键 B 点删除，删掉的是 A」的数据事故。 -->
+                                    <!-- AutomationProperties.Name：不设的话辅助技术与自动化工具读到的是
+                                         「MixCut.Models.Project」这个类名，而不是项目名。 -->
+                                    <Grid Background="Transparent"
+                                          AutomationProperties.Name="{Binding Name}">
+                                        <Grid.ContextMenu>
+                                            <ContextMenu>
+                                                <MenuItem Header="重命名…" Click="OnRenameProject" />
+                                                <Separator />
+                                                <MenuItem Header="删除" Click="OnDeleteProject" />
+                                            </ContextMenu>
+                                        </Grid.ContextMenu>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
@@ -133,13 +147,9 @@
                                     </Grid>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
-                            <ListBox.ContextMenu>
-                                <ContextMenu>
-                                    <MenuItem Header="重命名…" Click="OnRenameProject" />
-                                    <Separator />
-                                    <MenuItem Header="删除" Click="OnDeleteProject" />
-                                </ContextMenu>
-                            </ListBox.ContextMenu>
+                            <!-- 这里曾经还挂着一份 ListBox 级 ContextMenu。它已随「菜单挂到行上」的修复失效，
+                                 但留着仍有害：在列表下方空白处右键会弹出它，而它的 handler 只能读 SelectedItem
+                                 —— 用户以为在操作右键的位置，实际删的是当前选中项。已删除，只保留行级菜单。 -->
                         </ListBox>
                         <Button x:Name="NewProjectButton" Content="＋  新建项目"
                                 Margin="0,4" Padding="8,6" HorizontalContentAlignment="Left"

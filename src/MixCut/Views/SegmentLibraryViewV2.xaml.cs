@@ -125,12 +125,16 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
                             _vm.SetProcessing(placeholderId, stage.EndsWith("…") ? stage : stage + "…");
                     }));
 
-                // 该文件完成：清占位 loading，刷新为就绪卡（台词/标签就位）。
+                // 该文件完成：清占位 loading（SetProcessing 是增量路径，直接改对应卡片，不必全量重建）。
                 if (placeholderId != Guid.Empty) _vm.SetProcessing(placeholderId, null);
                 if (r.Status == Services.UserSegments.UserSegmentImportStatus.Success) okCount++;
                 else skipped.Add($"{fileName}：{r.Message}");
-                RefreshSegmentLibrary();
             }
+
+            // 全量刷新只做一次（原本在循环里每个文件都刷一次）：RefreshSegmentLibrary 是
+            // 「同步全查 DB + 重建所有分组卡片 + 重算统计/chips」的全家桶，选 10 个文件上传
+            // 就是 20 次全量重建，上传过程中界面持续抽搐。
+            RefreshSegmentLibrary();
 
             // §F：广播失效 Overview/Schemes 等缓存（自建分镜计入分镜数）。
             _services.GetService<ImportViewModel>()?.NotifySegmentsChanged();
@@ -195,11 +199,24 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 
     public void LoadProject(Project project)
     {
-        if (_currentProject?.Id == project.Id) return;
+        // 这里曾经有一句 `if (_currentProject?.Id == project.Id) return;`，已删除。
+        //
+        // 它看起来是「同项目不重复加载」的性能保护，实际上是个数据不刷新的 bug：
+        // 「同项目要不要重载」的决策**已经由 MainWindow.UpdateContent 的 _viewLastLoadedProjectId
+        // 缓存统一负责**（导航切换跳过、数据变更时主动移除缓存条目以强制重载）。视图内再守一次，
+        // 就把 OnSegmentsChanged 的缓存失效整个吃掉了 ——
+        // 复现：进过一次分镜库 → 回素材导入拖新视频 → 分析完成 → 切回分镜库，新分镜不出现，
+        // 必须切到别的项目再切回来或者重启。全项目 6 个 IProjectView 里只有这个视图加了这层守卫。
         _currentProject = project;
+
+        // 切项目：上一个项目的分镜可能正在播，先全局停播（否则切走了还在出声）。
+        Components.InlineVideoPlayer.StopAll();
 
         _vm.SetSelectionMode(false);
         _vm.ClearSelection();
+        // 筛选条件也必须重置：否则在 A 项目搜过「优惠」，切到 B 会拿旧搜索词过滤 B 的分镜，
+        // 界面显示「0 / 87 个分镜」+ 空状态，用户第一反应是「B 的分镜没了」。
+        ResetFilterUi();
         _vm.LoadSegments(project);
         BuildTypeChips();
         // 卡片立即渲染（黑底先出，CardVM 后台异步加载缩略图，加载完 INPC 刷新）
@@ -236,18 +253,45 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 
     // ============ 工具栏 ============
 
+    /// <summary>
+    /// 搜索防抖计时器。每敲一个字都跑一遍 ApplyFilter + RebuildGroups（几十上百张卡全部重建）
+    /// 会让打字明显发涩 —— 尤其中文输入法逐字上屏时每个候选都触发一次。180ms 内的连续输入合并成一次，
+    /// 既感觉不到延迟，又把重建次数从「每个字符一次」降到「每次停顿一次」。
+    /// </summary>
+    private System.Windows.Threading.DispatcherTimer? _searchDebounce;
+
     private void OnSearchChanged(object sender, TextChangedEventArgs e)
     {
-        _vm.Filter.SearchText = SearchBox.Text;
+        // 清除按钮的显隐是纯视觉、无成本 → 立即响应，不进防抖，否则按钮会慢半拍。
         ClearSearchButton.Visibility = string.IsNullOrEmpty(SearchBox.Text)
             ? Visibility.Collapsed : Visibility.Visible;
+
+        _searchDebounce?.Stop();
+        _searchDebounce ??= new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(180),
+        };
+        _searchDebounce.Tick -= OnSearchDebounceTick;
+        _searchDebounce.Tick += OnSearchDebounceTick;
+        _searchDebounce.Start();
+    }
+
+    private void OnSearchDebounceTick(object? sender, EventArgs e)
+    {
+        _searchDebounce?.Stop();
+        _vm.Filter.SearchText = SearchBox.Text;
         _vm.ApplyFilter();
         _vm.RebuildGroups();
         UpdateStats();
         UpdateEmptyState();
     }
 
-    private void OnClearSearch(object sender, RoutedEventArgs e) => SearchBox.Text = string.Empty;
+    private void OnClearSearch(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Text = string.Empty;
+        // 点「✕」是明确意图（不是打字中途），立即恢复全部结果，不等防抖那 180ms。
+        OnSearchDebounceTick(null, EventArgs.Empty);
+    }
 
     /// <summary>台词进入编辑态时自动聚焦 TextBox 并全选，用户直接改（对齐 mac textEditorFocused）。</summary>
     private void TranscriptEditBox_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
@@ -263,12 +307,6 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
     }
 
-    private void OnViewModeChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!IsLoaded) return;
-        _vm.IsGridView = ViewModeCombo.SelectedIndex == 0;
-    }
-
     private void OnSortChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!IsLoaded) return;
@@ -279,18 +317,34 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
 
     private void OnResetFilter(object sender, RoutedEventArgs e)
     {
-        _vm.ResetFilter();
-        SearchBox.Text = string.Empty;
+        ResetFilterUi();
         BuildTypeChips();
         _vm.RebuildGroups();
         UpdateStats();
         UpdateEmptyState();
     }
 
+    /// <summary>
+    /// 清空筛选条件与对应控件（搜索词 / 类型 chip / 排序）。
+    /// 切项目与「重置筛选」共用 —— 切项目时不清会把上个项目的搜索词带过去过滤新项目。
+    /// 注意要先摘掉 SelectionChanged，否则改 SortCombo 会反过来触发一次多余的重建。
+    /// </summary>
+    private void ResetFilterUi()
+    {
+        _vm.ResetFilter();
+        _searchDebounce?.Stop();
+        SearchBox.Text = string.Empty;
+        SortCombo.SelectionChanged -= OnSortChanged;
+        SortCombo.SelectedIndex = 0;
+        SortCombo.SelectionChanged += OnSortChanged;
+    }
+
     // ============ 多选 ============
 
     private void OnToggleSelectionMode(object sender, RoutedEventArgs e)
     {
+        // 进多选态时点击语义变成「勾选」，正在播的视频会跟接下来的批量操作抢注意力 → 先停。
+        if (!_vm.IsSelectionMode) Components.InlineVideoPlayer.StopAll();
         _vm.SetSelectionMode(!_vm.IsSelectionMode);
         _vm.SyncSelectionModeToCards();
         UpdateSelectionToolbar();
@@ -330,10 +384,12 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     {
         var count = _vm.SelectedSegmentIds.Count;
         if (count == 0) return;
-        var confirm = MessageBox.Show(
-            $"确定要删除选中的 {count} 个分镜吗？删除后可按 Ctrl+Z 撤销。",
-            "确认批量删除", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
-        if (confirm != MessageBoxResult.OK) return;
+        var confirmed = Shared.MixCutDialog.Confirm(
+            Window.GetWindow(this),
+            $"删除选中的 {count} 个分镜？",
+            "删除后可以按 Ctrl+Z 撤销，或点提示条上的「撤销」。",
+            confirmText: $"删除 {count} 个", cancelText: "取消", destructive: true, icon: "🗑");
+        if (!confirmed) return;
         // P0-16：删除失败（DB 保存异常）时不谎报成功，给人话提示 + 重试入口。
         var deleted = _vm.DeleteSelectedSegments();
         if (deleted is null)
@@ -607,29 +663,17 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     /// </summary>
     private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Components.InlineVideoPlayer, PropertyChangedEventHandler> _playerHandlers = new();
 
-    /// <summary>hover 自动播放定时器（对齐 mac：进卡 0.35s 触发，离卡取消）。每卡一个，存于 VideoHost。</summary>
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SegmentCardViewModel, System.Windows.Threading.DispatcherTimer> _hoverTimers = new();
-
+    /// <summary>
+    /// 进卡：<b>只做高亮，不碰播放</b>。
+    ///
+    /// 这里曾经挂过「停留 0.35s 自动播放」的定时器，已按 CLAUDE.md §H 移除：鼠标扫过一排卡片时，
+    /// 每张都会起停一次播放器，画面和声音连续乱闪，是体感最差的一处交互。播放统一由点击触发
+    /// （整张缩略图都是点击区，见 <see cref="OnPlayOverlayClick"/>）—— 用户明确表达过要播才播。
+    /// </summary>
     private void OnCardMouseEnter(object sender, MouseEventArgs e)
     {
-        if (sender is not FrameworkElement { Tag: SegmentCardViewModel card } cardRoot) return;
+        if (sender is not FrameworkElement { Tag: SegmentCardViewModel card }) return;
         card.IsHovering = true;
-        if (!card.IsVideoFileAvailable) return;
-        if (IsSelectionModeActive()) return; // 多选态不自动播
-
-        // 起 0.35s 定时器，到时自动播放（对齐 mac hoverTimer）。
-        CancelHoverTimer(card);
-        var timer = new System.Windows.Threading.DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(350),
-        };
-        timer.Tick += (_, _) =>
-        {
-            CancelHoverTimer(card);
-            if (card.IsHovering) StartHoverPlay(card, cardRoot);
-        };
-        _hoverTimers.AddOrUpdate(card, timer);
-        timer.Start();
     }
 
     /// <summary>
@@ -643,7 +687,6 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (FindAncestorByName(fe, "CardRoot") is not FrameworkElement { Tag: SegmentCardViewModel card } cardRoot) return;
         if (!card.IsVideoFileAvailable) return;
         if (IsSelectionModeActive()) return; // 多选态点击用于勾选，不播放
-        CancelHoverTimer(card);
         StartHoverPlay(card, cardRoot);
     }
 
@@ -658,38 +701,48 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         }
     }
 
+    /// <summary>
+    /// 离卡：<b>只取消高亮，不停止播放</b>。
+    ///
+    /// 曾经在这里 StopHoverPlay，导致「点了播放，鼠标一移开就断」—— 用户想看完一个分镜
+    /// 必须全程把鼠标按在卡片上。播放的生命周期改由播放器自己收口：播完、被别的卡抢占
+    /// （InlineVideoPlayer 的全局唯一播放）、或用户点了别处，都会触发 Idle 还原缩略图。
+    /// </summary>
     private void OnCardMouseLeave(object sender, MouseEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: SegmentCardViewModel card }) return;
         card.IsHovering = false;
-        CancelHoverTimer(card);
-        // 离卡停止播放、还原缩略图。
-        StopHoverPlay(card);
-    }
-
-    private void CancelHoverTimer(SegmentCardViewModel card)
-    {
-        if (_hoverTimers.TryGetValue(card, out var t)) { t.Stop(); _hoverTimers.Remove(card); }
     }
 
     private bool IsSelectionModeActive() =>
         DataContext is SegmentLibraryViewModel { IsSelectionMode: true };
 
-    /// <summary>停止某卡的 hover 播放并还原缩略图（离卡 / 被抢占时调用）。</summary>
-    private void StopHoverPlay(SegmentCardViewModel card)
-    {
-        var cardRoot = FindCardRootFor(card);
-        if (cardRoot is null) return;
-        var videoHost = FindChild<ContentControl>(cardRoot, "VideoHost");
-        if (videoHost?.Content is Components.InlineVideoPlayer player)
-        {
-            player.StopPlayback();
-        }
-    }
-
-    /// <summary>从可见卡片树里找到承载指定 card 的 CardRoot Border。</summary>
+    /// <summary>
+    /// 找到承载指定 card 的 CardRoot Border。
+    ///
+    /// 走容器生成器（组 → 该组的卡片 ItemsControl → 卡片容器）而不是扫描整棵可视树：
+    ///   · 快：原来每次调用都要递归遍历整个分镜库可视树（几万个 Visual），
+    ///     调 IN/OUT 后的边界预览因此慢半拍；现在只在目标组内找。
+    ///   · 正确：一旦开启虚拟化 + 容器回收，按 Name/Tag 扫树会命中**被回收后复用给别的卡**的容器，
+    ///     导致预览播到错误的分镜上。容器生成器是官方的「item → 容器」映射，不受回收影响
+    ///     （未实例化时返回 null，调用方本来就有 null 分支）。
+    /// </summary>
     private FrameworkElement? FindCardRootFor(SegmentCardViewModel card)
     {
+        var group = _vm.Groups.FirstOrDefault(g => g.Segments.Contains(card));
+        if (group is not null
+            && GroupsHost.ItemContainerGenerator.ContainerFromItem(group) is DependencyObject groupContainer)
+        {
+            // 组容器内只有一个承载分镜卡片的 ItemsControl。
+            var cardsHost = FindDescendant<ItemsControl>(groupContainer);
+            if (cardsHost?.ItemContainerGenerator.ContainerFromItem(card) is DependencyObject cardContainer
+                && FindDescendantNamed(cardContainer, "CardRoot") is { } found)
+            {
+                return found;
+            }
+        }
+
+        // 兜底：容器尚未生成（刚重建、还没走完布局）时退回扫描。
         foreach (var fe in EnumerateVisualChildren(this))
         {
             if (fe is FrameworkElement { Name: "CardRoot", Tag: SegmentCardViewModel c } cr && ReferenceEquals(c, card))
@@ -721,7 +774,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
     /// （旧监听会与窗口预览抢 SetSegment 导致范围打架，见 §不要破坏已有功能）。
     /// </summary>
     private Components.InlineVideoPlayer EnsureCardPlayer(
-        ContentControl videoHost, Grid? playBtn, Border? badge, SegmentCardViewModel card)
+        ContentControl videoHost, SegmentCardViewModel card)
     {
         if (videoHost.Content is Components.InlineVideoPlayer existing) return existing;
         var player = new Components.InlineVideoPlayer
@@ -737,8 +790,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
                 if (videoHost.Content == player)
                 {
                     TeardownHoverPlayer(videoHost, player, card);
-                    if (playBtn is not null) playBtn.Visibility = Visibility.Visible;
-                    if (badge is not null) badge.Visibility = Visibility.Visible;
+                    // 还原 ▶ / 时长徽章：改 VM 状态而不是直接动控件，容器复用也不会串卡。
+                    card.IsPlayingInline = false;
                 }
             }), System.Windows.Threading.DispatcherPriority.Background);
         };
@@ -767,8 +820,6 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (thumbGrid is null) return;
         var videoHost = FindChild<ContentControl>(thumbGrid, "VideoHost");
         if (videoHost is null) return;
-        var badge = FindChild<Border>(thumbGrid, "CardDurationBadge");
-        var playBtn = FindChild<Grid>(thumbGrid, "PlayOverlay");
 
         // 已经在播这张卡 → 忽略，避免重复 Open 抖动。
         if (videoHost.Content is Components.InlineVideoPlayer { IsPlaying: true })
@@ -780,9 +831,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
             "[SegPlayDiag] 点击/hover 播放 seq={Seq} startFrame={SF}",
             card.SequenceNumber, card.Segment.StartFrame);
 
-        var player = EnsureCardPlayer(videoHost, playBtn, badge, card);
-        if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
-        if (badge is not null) badge.Visibility = Visibility.Collapsed;
+        var player = EnsureCardPlayer(videoHost, card);
+        card.IsPlayingInline = true;   // ▶ 与时长徽章随之隐藏（走 binding）
         PrimePlayer(player, videoHost);
         // #12：走 EffectivePicture —— 有 AI 替换画面则播替换视频（0..替换帧数），否则播原片段。未替换时返回原值。
         var ep = card.Segment.EffectivePicture;
@@ -826,8 +876,6 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (thumbGrid is null) return;
         var videoHost = FindChild<ContentControl>(thumbGrid, "VideoHost");
         if (videoHost is null) return;
-        var badge = FindChild<Border>(thumbGrid, "CardDurationBadge");
-        var playBtn = FindChild<Grid>(thumbGrid, "PlayOverlay");
 
         var fps = card.Segment.EffectiveFps;
         if (fps <= 0) return; // 无 fps 无法帧窗预览（静止帧已给反馈）
@@ -845,9 +893,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
             "[BoundaryPreviewDiag] seq={Seq} isStart={IsStart} win=[{A},{B}) fps={Fps:F3}",
             card.SequenceNumber, isStart, winStart, winEnd, fps);
 
-        var player = EnsureCardPlayer(videoHost, playBtn, badge, card);
-        if (playBtn is not null) playBtn.Visibility = Visibility.Collapsed;
-        if (badge is not null) badge.Visibility = Visibility.Collapsed;
+        var player = EnsureCardPlayer(videoHost, card);
+        card.IsPlayingInline = true;   // ▶ 与时长徽章随之隐藏（走 binding）
         PrimePlayer(player, videoHost);
         player.PlaySegment(card.VideoLocalPath!, card.ThumbnailPath, winStart, winEnd, fps);
     }
@@ -884,7 +931,8 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (sender is TextBox { Tag: SegmentCardViewModel card } tb)
         {
             card.CommitStartCommand.Execute(tb.Text);
-            tb.Text = card.StartTime.ToString("F1", CultureInfo.InvariantCulture);
+            // 回填规范化后的值（越界/非法输入会被 VM 拒绝，这里把显示拉回真实值）。单位是帧。
+            tb.Text = card.StartFrameText;
         }
     }
 
@@ -893,7 +941,7 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
         if (sender is TextBox { Tag: SegmentCardViewModel card } tb)
         {
             card.CommitEndCommand.Execute(tb.Text);
-            tb.Text = card.EndTime.ToString("F1", CultureInfo.InvariantCulture);
+            tb.Text = card.EndFrameText;
         }
     }
 
@@ -999,6 +1047,34 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
             var child = VisualTreeHelper.GetChild(root, i);
             if (child is T t && t.Name == name) return t;
             var found = FindChild<T>(child, name);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    /// <summary>在子树里找第一个指定类型的元素（不看名字）。用于从组容器里取承载卡片的 ItemsControl。</summary>
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is null) return null;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T t) return t;
+            var found = FindDescendant<T>(child);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    /// <summary>在子树里按 x:Name 找元素（不限类型）。</summary>
+    private static FrameworkElement? FindDescendantNamed(DependencyObject root, string name)
+    {
+        if (root is null) return null;
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement fe && fe.Name == name) return fe;
+            var found = FindDescendantNamed(child, name);
             if (found is not null) return found;
         }
         return null;

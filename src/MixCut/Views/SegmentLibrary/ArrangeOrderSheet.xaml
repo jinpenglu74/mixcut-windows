@@ -2,61 +2,123 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:shared="clr-namespace:MixCut.Views.Shared"
-        Title="调整顺序" Width="780" Height="560"
-        WindowStartupLocation="CenterOwner" Background="#16161A"
-        WindowStyle="ToolWindow" ShowInTaskbar="False"
+        xmlns:conv="clr-namespace:MixCut.Views.Converters"
+        Title="调整顺序" Width="860" Height="620"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        Background="{StaticResource BgPrimaryBrush}"
+        TextOptions.TextFormattingMode="Display" UseLayoutRounding="True"
         x:Name="SheetRoot">
-    <Grid Margin="20" DataContext="{Binding ElementName=SheetRoot}">
+    <Window.Resources>
+        <conv:IndexToOrderConverter x:Key="IndexToOrder" />
+
+        <!-- 顺序调整箭头：圆角 + hover/pressed 反馈（原来是无圆角的深色方块，点上去毫无反馈）。 -->
+        <Style x:Key="ArrangeArrowButton" TargetType="Button">
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" CornerRadius="8"
+                                Background="{StaticResource BgSecondaryBrush}"
+                                BorderBrush="{StaticResource BorderSubtleBrush}"
+                                BorderThickness="1">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBlueLightBrush}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource AccentBlueBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource AccentBlueBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentBlueBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="24" DataContext="{Binding ElementName=SheetRoot}">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Margin="0,0,0,12">
-            <TextBlock Text="调整顺序后生成自定义方案" Foreground="White" FontSize="14" FontWeight="SemiBold"/>
-            <TextBlock Text="左右箭头调整每个分镜的位置；点「生成方案」AI 会反推方案信息。"
-                       Foreground="#909090" FontSize="11" Margin="0,4,0,0"/>
+        <!-- 标题区 -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock Text="调整顺序后生成自定义方案"
+                       FontSize="16" FontWeight="SemiBold"
+                       Foreground="{StaticResource TextPrimaryBrush}" />
+            <TextBlock Text="卡片左上角数字＝成片里的先后顺序；用 ◀ ▶ 调整位置，确认后 AI 会按这个顺序反推方案信息。"
+                       FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                       Margin="0,6,0,0" TextWrapping="Wrap" />
         </StackPanel>
 
-        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-            <ItemsControl ItemsSource="{Binding OrderedItems}">
-                <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate>
-                </ItemsControl.ItemsPanel>
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Grid Margin="6">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <shared:SegmentCardCompact Grid.Row="0"/>
-                            <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,8,0,0">
-                                <Button Content="◀" Click="OnMoveLeftClick" Tag="{Binding}"
-                                        Width="32" Height="28" Background="#2D2D33" Foreground="White"
-                                        BorderThickness="0" Margin="0,0,6,0" Cursor="Hand"
-                                        ToolTip="向前移动"/>
-                                <Button Content="▶" Click="OnMoveRightClick" Tag="{Binding}"
-                                        Width="32" Height="28" Background="#2D2D33" Foreground="White"
-                                        BorderThickness="0" Cursor="Hand"
-                                        ToolTip="向后移动"/>
-                            </StackPanel>
-                        </Grid>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+        <!-- 分镜卡片区（浅色画布，与全局设计系统一致；原来是硬编码的 #16161A 黑底） -->
+        <Border Grid.Row="1" CornerRadius="10" Padding="16"
+                Background="{StaticResource BgSubtleBrush}"
+                BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="1">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding OrderedItems}" AlternationCount="999">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="10" Padding="10" Margin="0,0,12,0"
+                                    Background="{StaticResource BgPrimaryBrush}"
+                                    BorderBrush="{StaticResource BorderSubtleBrush}" BorderThickness="1">
+                                <StackPanel>
+                                    <!-- 缩略图 + 左上顺序徽章 -->
+                                    <Grid>
+                                        <shared:SegmentCardCompact />
+                                        <Border CornerRadius="999" Width="24" Height="24"
+                                                Background="{StaticResource AccentBlueBrush}"
+                                                HorizontalAlignment="Left" VerticalAlignment="Top"
+                                                Margin="6,6,0,0">
+                                            <TextBlock Foreground="White" FontSize="12" FontWeight="Bold"
+                                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                       Text="{Binding (ItemsControl.AlternationIndex), RelativeSource={RelativeSource AncestorType=ContentPresenter}, Converter={StaticResource IndexToOrder}}" />
+                                        </Border>
+                                    </Grid>
+                                    <!-- 顺序调整 -->
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
+                                        <Button Content="◀" Click="OnMoveLeftClick" Tag="{Binding}"
+                                                Style="{StaticResource ArrangeArrowButton}"
+                                                Margin="0,0,8,0" ToolTip="往前挪一位" />
+                                        <Button Content="▶" Click="OnMoveRightClick" Tag="{Binding}"
+                                                Style="{StaticResource ArrangeArrowButton}"
+                                                ToolTip="往后挪一位" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
 
-        <Grid Grid.Row="2" Margin="0,12,0,0">
-            <TextBlock Text="{Binding HintText}" Foreground="#909090" FontSize="11" VerticalAlignment="Center"/>
+        <!-- 底部：提示 + 操作 -->
+        <Grid Grid.Row="2" Margin="0,16,0,0">
+            <TextBlock Text="{Binding HintText}" FontSize="12"
+                       Foreground="{StaticResource TextTertiaryBrush}" VerticalAlignment="Center" />
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="取消" Click="OnCancelClick"
-                        Width="80" Height="32" Background="#2D2D33" Foreground="White"
-                        BorderThickness="0" Margin="0,0,8,0" Cursor="Hand"/>
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Width="88" Height="34" Margin="0,0,10,0" />
                 <Button x:Name="GenerateButton" Content="{Binding GenerateButtonText}" Click="OnGenerateClick"
-                        Width="160" Height="32" Background="{StaticResource PurpleAccentBrush}" Foreground="White"
-                        BorderThickness="0" Cursor="Hand"/>
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Width="164" Height="34" />
             </StackPanel>
         </Grid>
     </Grid>

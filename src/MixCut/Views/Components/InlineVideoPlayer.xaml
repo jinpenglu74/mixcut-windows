@@ -46,11 +46,14 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
+                    <!-- Padding=0 必须显式写：全局隐式 Button 样式给了 Padding="12,6"，
+                         20×20 的图标按钮内容区会被挤成负数，图标直接不可见。 -->
                     <Button Grid.Column="0" x:Name="PauseButton" Click="OnPauseClick"
                             Background="Transparent" BorderThickness="0" Foreground="White"
+                            Padding="0"
                             Width="20" Height="20" FontSize="11" Content="⏸" Cursor="Hand" />
                     <TextBlock Grid.Column="1" x:Name="CurrentTimeText" Text="0:00"
-                               Foreground="White" FontSize="9"
+                               Foreground="White" FontSize="{StaticResource FontSizeCaption}"
                                FontFamily="{StaticResource FontFamilyMono}" VerticalAlignment="Center"
                                Margin="4,0,8,0" />
                     <Slider Grid.Column="2" x:Name="ProgressSlider" Minimum="0" Maximum="1"
@@ -60,11 +63,12 @@
                             Thumb.DragCompleted="OnSliderDragEnd"
                             ValueChanged="OnSliderValueChanged" />
                     <TextBlock Grid.Column="3" x:Name="DurationText" Text="0:00"
-                               Foreground="White" FontSize="9"
+                               Foreground="White" FontSize="{StaticResource FontSizeCaption}"
                                FontFamily="{StaticResource FontFamilyMono}" VerticalAlignment="Center"
                                Margin="8,0,4,0" />
                     <Button Grid.Column="4" x:Name="StopButton" Click="OnStopClick"
                             Background="Transparent" BorderThickness="0" Foreground="White"
+                            Padding="0"
                             Width="20" Height="20" FontSize="10" Content="✕" Cursor="Hand" />
                 </Grid>
             </Border>

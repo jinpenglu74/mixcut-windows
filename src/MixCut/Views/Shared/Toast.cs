@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using MixCut.Infrastructure;
 
 namespace MixCut.Views.Shared;
 
@@ -127,10 +128,10 @@ public sealed class ToastCenter
 
     private static (string Icon, Color Color) StyleVisuals(ToastStyle style) => style switch
     {
-        ToastStyle.Success => ("✓", Color.FromRgb(0x2E, 0x8B, 0x57)),
-        ToastStyle.Warning => ("⚠", Color.FromRgb(0xC0, 0x6F, 0x00)),
-        ToastStyle.Error => ("✕", Color.FromRgb(0xD3, 0x3A, 0x3A)),
-        ToastStyle.Info => ("ℹ", Color.FromRgb(0x1D, 0x6B, 0xE5)),
-        _ => ("ℹ", Color.FromRgb(0x66, 0x66, 0x66)),
+        ToastStyle.Success => ("✓", ((SolidColorBrush)Theme.Success).Color),
+        ToastStyle.Warning => ("⚠", ((SolidColorBrush)Theme.Warning).Color),
+        ToastStyle.Error => ("✕", ((SolidColorBrush)Theme.Danger).Color),
+        ToastStyle.Info => ("ℹ", ((SolidColorBrush)Theme.Accent).Color),
+        _ => ("ℹ", ((SolidColorBrush)Theme.TextTertiary).Color),
     };
 }

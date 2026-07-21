@@ -11,9 +11,10 @@ namespace MixCut.ViewModels.Cards;
 /// 按视频分组的容器 VM（SegmentLibrary V2 用）。
 /// 一个 VideoGroupViewModel = 一个视频的标题栏 + 配音设置条 + 它的全部分镜卡片。
 /// </summary>
-public sealed partial class VideoGroupViewModel : ObservableObject
+public sealed partial class VideoGroupViewModel : ObservableObject, IDisposable
 {
     private readonly DubbingViewModel? _dubbing;
+    private bool _disposed;
 
     public Video Video { get; }
 
@@ -49,7 +50,8 @@ public sealed partial class VideoGroupViewModel : ObservableObject
     /// <summary>本组的分镜卡片（视图绑定到这里）。</summary>
     public ObservableCollection<SegmentCardViewModel> Segments { get; }
 
-    public VideoGroupViewModel(Video video, IEnumerable<SegmentCardViewModel> cards, DubbingViewModel? dubbing = null)
+    public VideoGroupViewModel(Video video, IEnumerable<SegmentCardViewModel> cards,
+        DubbingViewModel? dubbing = null, DubStatusSnapshot? dubStatus = null)
     {
         Video = video;
         _dubbing = dubbing;
@@ -62,7 +64,10 @@ public sealed partial class VideoGroupViewModel : ObservableObject
         {
             _variantCount = _dubbing.VariantCount;
             _dubbing.VideoStateChanged += OnDubVideoStateChanged;
-            _ = RefreshDubStatusAsync();
+            // 注意：这里**不主动查库**。配音状态由 RebuildGroups 批量预取后统一灌进来
+            // （见 RefreshDubStatusAsync 的 prefetched 参数）。曾经在这里 fire-and-forget 查两次，
+            // 结果每次重建分组 = 视频数 × 2 次 SQL × 2 个 DbContext。
+            _ = RefreshDubStatusAsync(dubStatus);
         }
     }
 
@@ -136,11 +141,27 @@ public sealed partial class VideoGroupViewModel : ObservableObject
     }
 
     /// <summary>刷新「✓ N 个变体」+ 主按钮文案（克隆与否）。</summary>
-    public async Task RefreshDubStatusAsync()
+    /// <param name="prefetched">
+    /// 批量预取的配音状态。传入时直接用，<b>一次数据库都不查</b>。
+    /// RebuildGroups 会为所有视频一次性查好再逐组传进来 —— 否则每组构造各开 2 个 DbContext 查 2 次，
+    /// 一个 10 视频的项目每次搜索/筛选/排序就是 20 次 SQL（见下方构造函数注释）。
+    /// 传 null 表示「单组自行刷新」（配音进度推送时只有那一个视频要更新，走原路径即可）。
+    /// </param>
+    public async Task RefreshDubStatusAsync(DubStatusSnapshot? prefetched = null)
     {
         if (_dubbing is null) return;
-        var cloned = await _dubbing.IsClonedAsync(VideoId);
-        var n = await _dubbing.EffectiveVariantCountAsync(VideoId);
+        bool cloned;
+        int n;
+        if (prefetched is not null)
+        {
+            cloned = prefetched.IsCloned;
+            n = prefetched.VariantCount;
+        }
+        else
+        {
+            cloned = await _dubbing.IsClonedAsync(VideoId);
+            n = await _dubbing.EffectiveVariantCountAsync(VideoId);
+        }
         System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
             DubMainButtonText = cloned ? "改写配音" : "克隆并改写配音";
@@ -148,10 +169,42 @@ public sealed partial class VideoGroupViewModel : ObservableObject
         });
     }
 
+    /// <summary>一个视频的配音状态快照（批量预取用）。</summary>
+    public sealed record DubStatusSnapshot(bool IsCloned, int VariantCount);
+
+    /// <summary>
+    /// 退订配音事件。<b>必须调用</b> —— 组 VM 在每次 RebuildGroups 都会整批重建，
+    /// 若不退订，被丢弃的旧组仍挂在 DubbingViewModel.VideoStateChanged 上：搜索/筛选 10 次
+    /// 就有 10 份同视频的僵尸组 VM，配音每推一次进度它们全部被唤醒、各自再查一轮数据库。
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_dubbing is not null)
+        {
+            _dubbing.VideoStateChanged -= OnDubVideoStateChanged;
+        }
+    }
+
     [RelayCommand]
     private async Task RewriteAllAsync()
     {
         if (_dubbing is null) return;
+
+        // 计费确认：这一下点下去 = 分镜数 × 变体数 次 AI 改写 + 同样次数的 TTS 克隆合成，
+        // 40 个分镜拨到 ×5 就是 200 次付费调用，且发出去的请求取消也退不回来。
+        // 同一个应用里 AI 画面重生成是有「生成并计费」确认的，配音这条路却一路绿灯 —— 对齐它。
+        var count = Segments.Count;
+        var total = count * Math.Max(1, VariantCount);
+        var ok = Views.Shared.MixCutDialog.Confirm(
+            System.Windows.Application.Current?.MainWindow,
+            $"为「{VideoName}」的 {count} 个分镜各生成 {VariantCount} 版配音？",
+            $"共约 {total} 次 AI 调用（改写台词 + 克隆音色合成），按用量计费。\n\n"
+            + "生成期间可以随时取消，但已经发出的请求不会退费。",
+            confirmText: "生成并计费", cancelText: "再想想", icon: "💳");
+        if (!ok) return;
+
         await _dubbing.RewriteAllAsync(VideoId);
     }
 

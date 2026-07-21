@@ -300,4 +300,189 @@
         <Setter Property="CanContentScroll" Value="True" />
     </Style>
 
+    <!-- ==========================================================================
+         文字样式 —— 设计系统此前最大的缺口
+         ==========================================================================
+         此前有 5 个按钮样式、3 个 Border 样式，却**一个 TextBlock 样式都没有**，
+         而 Views 里有 329 个 TextBlock。想写一行说明文字只能：
+             <TextBlock FontSize="11" Foreground="#666666" />
+         一处就同时制造「硬编码字号 + 硬编码颜色」两个违规 —— 全局 677 处颜色硬编码里
+         绝大多数正是 TextBlock 的 Foreground。给出低摩擦的替代路径，规范才可能被遵守。 -->
+
+    <!-- 页面主标题（22）：每页顶部只应有一个 -->
+    <Style x:Key="PageTitleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeH1}" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+    </Style>
+
+    <!-- 弹窗 / 大区块标题（16） -->
+    <Style x:Key="TitleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeH3}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+    </Style>
+
+    <!-- 区块小标题（12 SemiBold + 三级色）：如「导出设置」「批量导出全部方案」 -->
+    <Style x:Key="SectionTitleTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}" />
+        <Setter Property="Margin" Value="{StaticResource GapSectionTitle}" />
+    </Style>
+
+    <!-- 正文（12） -->
+    <Style x:Key="BodyTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <!-- 次要说明（11 + 二级色）：表单标签、辅助解释 -->
+    <Style x:Key="SecondaryTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBodySmall}" />
+        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <!-- 弱化说明（11 + 三级色）：提示、统计、脚注 -->
+    <Style x:Key="MutedTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBodySmall}" />
+        <Setter Property="Foreground" Value="{StaticResource TextTertiaryBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <!-- 角标 / 徽章文字（10 + 四级色）：中文可读下限，勿再往下（9px 中文会糊） -->
+    <Style x:Key="CaptionTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeCaption}" />
+        <Setter Property="Foreground" Value="{StaticResource TextQuaternaryBrush}" />
+    </Style>
+
+    <!-- 等宽数字（时间码 / 帧号 / 码率）：保证数字列对齐 -->
+    <Style x:Key="MonoTextStyle" TargetType="TextBlock">
+        <Setter Property="FontFamily" Value="{StaticResource FontFamilyMono}" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBodySmall}" />
+        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+    </Style>
+
+    <!-- 错误 / 成功文字 -->
+    <Style x:Key="ErrorTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBodySmall}" />
+        <Setter Property="Foreground" Value="{StaticResource DangerRedBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style x:Key="SuccessTextStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBodySmall}" />
+        <Setter Property="Foreground" Value="{StaticResource SuccessGreenBrush}" />
+        <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+
+    <!-- ==========================================================================
+         隐式 Button 兜底样式 —— 全局最重要的一条
+         ==========================================================================
+         没有这条时，任何没写 Style 的 Button 都会退回 WPF 默认 Aero2 模板：直角、
+         1px 系统灰边，而且 **hover 时会用系统浅蓝 #BEE6FD 盖掉自定义 Background** ——
+         于是内联写了 Background="#1D6BE5" 的蓝色 CTA 一碰鼠标就变成惨白浅蓝，看着像坏了。
+         全项目曾有 80+ 个这样的裸 Button（方案页/设置页/侧边栏/各弹窗），是「像拼出来的」的头号来源。
+
+         设计要点：Background / Foreground / BorderBrush 全部 TemplateBinding，
+         所以内联指定了颜色的按钮**保留自己的配色**，同时白拿圆角 + hover/pressed/disabled 三态。
+         hover 用 Opacity 而非换色，是为了对任意底色（深/浅/品牌色）都成立。
+         显式写了 Style 的按钮不受影响（显式优先于隐式）。 -->
+    <Style TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource BgPrimaryBrush}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource BorderPrimaryBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="12,6" />
+        <Setter Property="FontSize" Value="{StaticResource FontSizeBody}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="root"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{StaticResource CornerRadiusMd}"
+                            Padding="{TemplateBinding Padding}"
+                            RenderTransformOrigin="0.5,0.5">
+                        <Border.RenderTransform>
+                            <ScaleTransform ScaleX="1" ScaleY="1" />
+                        </Border.RenderTransform>
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="root" Property="Opacity" Value="0.84" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="root" Property="Opacity" Value="0.72" />
+                            <Setter TargetName="root" Property="RenderTransform">
+                                <Setter.Value>
+                                    <ScaleTransform ScaleX="0.97" ScaleY="0.97" />
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="root" Property="Opacity" Value="0.42" />
+                            <Setter Property="Cursor" Value="Arrow" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- 隐式 ProgressBar：默认模板是带边框的胶囊 + 系统色 + 内部高光动画，
+         和卡片内自绘的 3px 品牌蓝进度条并排出现时像两个系统。统一成细扁品牌蓝。 -->
+    <Style TargetType="ProgressBar">
+        <Setter Property="Height" Value="4" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{StaticResource AccentBlueBrush}" />
+        <Setter Property="Background" Value="{StaticResource BgTertiaryBrush}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ProgressBar">
+                    <Grid>
+                        <Border x:Name="track" CornerRadius="{StaticResource CornerRadiusSm}"
+                                Background="{TemplateBinding Background}" />
+                        <Border x:Name="PART_Track" />
+                        <Border x:Name="PART_Indicator" HorizontalAlignment="Left"
+                                CornerRadius="{StaticResource CornerRadiusSm}"
+                                Background="{TemplateBinding Foreground}" />
+                        <!-- 不确定进度（IsIndeterminate=True）：满宽色条做呼吸。
+                             自定义 ControlTemplate 会**完全替换**默认模板，包括默认模板里那套
+                             不确定动画 —— 不补这一段的话，闪屏 / 导入 / 方案生成 / 分镜处理遮罩 /
+                             AI 画面生成这些"转圈"态全都会退化成一条静止空槽，用户看到的是"卡死了"。
+                             用透明度呼吸而不是滑块平移：后者要拿运行时宽度算位移，模板里绑不到。 -->
+                        <Border x:Name="pulse" Visibility="Collapsed"
+                                CornerRadius="{StaticResource CornerRadiusSm}"
+                                Background="{TemplateBinding Foreground}" />
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsIndeterminate" Value="True">
+                            <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="pulse" Property="Visibility" Value="Visible" />
+                            <Trigger.EnterActions>
+                                <BeginStoryboard x:Name="pulseSb">
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetName="pulse"
+                                                         Storyboard.TargetProperty="Opacity"
+                                                         From="0.28" To="1" Duration="0:0:0.85"
+                                                         AutoReverse="True" RepeatBehavior="Forever" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </Trigger.EnterActions>
+                            <Trigger.ExitActions>
+                                <StopStoryboard BeginStoryboardName="pulseSb" />
+                            </Trigger.ExitActions>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>
