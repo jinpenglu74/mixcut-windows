@@ -43,6 +43,11 @@ public partial class App : Application
                     Path.Combine(AppPaths.LogDirectory, "mixcut-.log"),
                     rollingInterval: RollingInterval.Day,
                     retainedFileCountLimit: 7,
+                    // 显式 UTF-8（也是 Serilog 当前默认值），把编码钉死不随库版本漂移。
+                    // 排查提示：日志文件本身是 UTF-8，但 Windows PowerShell 5.1 的 Get-Content
+                    // 默认按系统 ANSI(GBK) 读，中文会显示成「鏈鐞嗗紓甯?」这种乱码 —— 那是读法不对，
+                    // 不是日志坏了。读日志请加 -Encoding UTF8。
+                    encoding: System.Text.Encoding.UTF8,
                     outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}"))
             .ConfigureServices(ConfigureServices)
             .Build();
@@ -1095,6 +1100,14 @@ public partial class App : Application
 
             // issue #7 帧精确重构：把旧分镜的「秒」边界按视频 fps 回填为帧号（一次性，防重）
             BackfillSegmentFrames(db, settingsForMigration, loggerForMigration);
+
+            // 「归档」功能移除后的收尾迁移：issue #16 已删掉归档入口，但历史库里可能仍存着
+            // Status='Archived' 的项目 —— 它们会被主列表过滤掉，用户看不见也删不掉，等于数据被吞了。
+            // 这里把它们统一恢复成「已完成」，之后 ProjectStatus.Archived 枚举才能安全删除。
+            RestoreArchivedProjects(db, loggerForMigration);
+
+            // 认领崩溃前已提交的 AI 画面生成任务（涉及真金白银，必须恢复）。
+            ResetStaleGeneratingVariants(db, loggerForMigration);
         }
 
         // issue #6 叙事结构 AI 自测：`--selftest-narrative` 用真 DeepSeek 跑一次生成后退出（构建机验证）。
@@ -1167,6 +1180,63 @@ public partial class App : Application
         if (Array.IndexOf(e.Args, "--selftest-manualadd") >= 0)
         {
             await RunManualAddSelfTestAsync();
+            Shutdown();
+            return;
+        }
+
+        // v0.13.x 对话框自测：`--selftest-dialog` 直接弹一个「危险操作确认」对话框并停住，
+        // 供构建机截图核对视觉（自绘对话框替换 MessageBox 后，光看代码看不出渲染对不对）。
+        // 不碰任何用户数据；截图完 kill 进程即可。默认演危险态，传 `alert` 演提示态。
+        var dlgIdx = Array.IndexOf(e.Args, "--selftest-dialog");
+        if (dlgIdx >= 0)
+        {
+            var mode = dlgIdx + 1 < e.Args.Length ? e.Args[dlgIdx + 1] : "confirm";
+            // 关掉闪屏前必须先改 ShutdownMode：默认 OnLastWindowClose 下，闪屏一关就「最后一个窗口
+            // 关闭了」→ WPF 立刻 Shutdown，对话框根本来不及显示（实测应用直接静默退出）。
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            try { splash?.Close(); } catch { /* 自测路径，关不掉也不影响 */ }
+            if (mode == "progress")
+            {
+                // 进度条自检：自定义 ControlTemplate 会替换掉默认模板里的不确定动画，
+                // 漏补触发器时「转圈」态会退化成静止空槽（闪屏 / 导入 / 生成 / 导出全中）。
+                // 这里同屏摆出确定 + 不确定两种，截图即可核对后者在动。
+                var panel = new System.Windows.Controls.StackPanel { Margin = new Thickness(28) };
+                panel.Children.Add(new System.Windows.Controls.TextBlock
+                {
+                    Text = "确定进度（60%）", Margin = new Thickness(0, 0, 0, 6),
+                });
+                panel.Children.Add(new System.Windows.Controls.ProgressBar
+                {
+                    Minimum = 0, Maximum = 1, Value = 0.6, Width = 320,
+                });
+                panel.Children.Add(new System.Windows.Controls.TextBlock
+                {
+                    Text = "不确定进度（应呼吸闪动）", Margin = new Thickness(0, 18, 0, 6),
+                });
+                panel.Children.Add(new System.Windows.Controls.ProgressBar
+                {
+                    IsIndeterminate = true, Width = 320,
+                });
+                new Window
+                {
+                    Title = "ProgressBar 自检", Width = 420, Height = 200,
+                    WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                    Content = panel,
+                }.ShowDialog();
+                Shutdown();
+                return;
+            }
+            if (mode == "alert")
+            {
+                Views.Shared.MixCutDialog.Alert(null, "模型未配置",
+                    "还没有配置 AI 模型的 API Key，无法生成混剪方案。\n\n请到「设置 → AI 模型」里填写后重试。");
+            }
+            else
+            {
+                Views.Shared.MixCutDialog.Confirm(null, "删除项目「双十一投放」",
+                    "该项目下的 3 个视频 · 21 个分镜 · 5 个方案都会一并删除，此操作不可撤销。",
+                    confirmText: "删除项目", cancelText: "取消", destructive: true, icon: "🗑");
+            }
             Shutdown();
             return;
         }
@@ -1607,6 +1677,81 @@ public partial class App : Application
         {
             // 状态清理失败不能阻止应用启动 —— 大不了让用户在 ImportView 看到「分析中」假象。
             Log.Warning(ex, "重置卡死视频状态失败，忽略");
+        }
+    }
+
+    /// <summary>
+    /// 把历史库里 Status='Archived' 的项目恢复成 'Completed'（一次性收尾迁移，幂等）。
+    ///
+    /// 背景：issue #16 移除了「归档」功能 —— 归档后项目从列表消失且无从恢复，是个只会误伤用户的功能。
+    /// 但入口删了之后，之前已经被归档的项目仍然躺在库里、仍然被主列表的 `!= Archived` 过滤掉：
+    /// 用户看不见它、也没有任何入口把它拿回来，等于数据被静默吞掉。
+    ///
+    /// 这里用原生 SQL 而不是 LINQ + 枚举，是因为迁移跑完之后 <c>ProjectStatus.Archived</c> 这个
+    /// 枚举值本身就会被删除 —— 迁移代码不能依赖一个即将不存在的符号。
+    /// </summary>
+    private static void RestoreArchivedProjects(Data.MixCutDbContext db, ILogger<App> logger)
+    {
+        try
+        {
+            var n = db.Database.ExecuteSqlRaw(
+                "UPDATE Projects SET Status = 'Completed' WHERE Status = 'Archived'");
+            if (n > 0)
+            {
+                logger.LogInformation("[ArchiveCleanup] 已把 {Count} 个历史归档项目恢复为「已完成」，重新出现在项目列表", n);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 迁移失败不该挡住启动：最坏情况是那几个老项目继续不显示，与迁移前一致。
+            logger.LogWarning(ex, "[ArchiveCleanup] 恢复历史归档项目失败，忽略");
+        }
+    }
+
+    /// <summary>
+    /// 认领崩溃/强退前卡在「生成中」的 AI 画面变体（<see cref="Models.ShotVariantStatus.Generating"/>）。
+    ///
+    /// 为什么必须做：Wan 视频编辑是**异步付费任务** —— 提交成功就已经产生费用，taskId 会立刻落库
+    /// （见 ShotVariantService「提交成功 —— 立刻落库 taskId」）。但如果应用在轮询期间挂掉，
+    /// 这条记录会永远停在 Generating：UI 只对 TimedOut 状态显示「重试」按钮，于是
+    /// **taskId 明明在库里、云端结果 24 小时内可免费取回，用户却拿不到，钱白花了**。
+    ///
+    /// 处理方式与是否已扣费严格对应：
+    ///   有 taskId → TimedOut：UI 出现「重试」，走已有的 ResumeAsync 用同一 taskId 续查，不重复扣费；
+    ///   无 taskId → Failed：说明还没提交成功，没产生费用，让用户重新发起即可。
+    /// </summary>
+    private static void ResetStaleGeneratingVariants(Data.MixCutDbContext db, ILogger<App> logger)
+    {
+        try
+        {
+            var generating = nameof(Models.ShotVariantStatus.Generating);
+            var stuck = db.ShotVariants.Where(v => v.StatusRaw == generating).ToList();
+            if (stuck.Count == 0)
+            {
+                return;
+            }
+
+            var claimable = 0;
+            foreach (var v in stuck)
+            {
+                if (!string.IsNullOrEmpty(v.TaskId))
+                {
+                    v.Status = Models.ShotVariantStatus.TimedOut;
+                    claimable++;
+                }
+                else
+                {
+                    v.Status = Models.ShotVariantStatus.Failed;
+                }
+            }
+            db.SaveChanges();
+            logger.LogInformation(
+                "[VariantRecover] 上次异常退出时有 {Total} 个 AI 画面任务在生成中：{Claimable} 个可凭 taskId 免费取回（已置为可重试），{Lost} 个未提交成功（已置失败）",
+                stuck.Count, claimable, stuck.Count - claimable);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[VariantRecover] 恢复 AI 画面生成任务失败，忽略");
         }
     }
 

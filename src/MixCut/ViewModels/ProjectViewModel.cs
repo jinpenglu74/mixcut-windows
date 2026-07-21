@@ -38,7 +38,7 @@ public partial class ProjectViewModel : ObservableObject
         FetchProjects();
     }
 
-    /// <summary>加载所有项目（含统计所需的导航数据）。已归档项目不显示在主列表。</summary>
+    /// <summary>加载所有项目（含统计所需的导航数据）。</summary>
     public void FetchProjects()
     {
         using var db = _dbFactory.CreateDbContext();
@@ -49,7 +49,6 @@ public partial class ProjectViewModel : ObservableObject
             // 项目/分镜多时启动卡顿。AsSplitQuery 拆成多条查询，结果完全一致、零消费点改动。
             .AsSplitQuery()
             .AsNoTracking()
-            .Where(p => p.Status != ProjectStatus.Archived)
             .OrderByDescending(p => p.UpdatedAt)
             .ToList();
 
@@ -130,33 +129,36 @@ public partial class ProjectViewModel : ObservableObject
         db.Projects.Remove(tracked); // 级联删除 ProjectVideo / 策略 / 方案 / 方案分镜
         db.SaveChanges();
 
-        // 检查每个视频是否还被其他项目引用。
-        foreach (var video in referencedVideos)
+        // 检查哪些视频还被其他项目引用 —— 一次查完。
+        // （原来是每个视频 1 次 Any + 1 次 SELECT + 1 次 SaveChanges，而每次 SaveChanges 都是一个
+        //  独立的 SQLite 写事务 + fsync，是删项目卡住的主要来源。）
+        var videoIds = referencedVideos.Select(v => v.Id).ToList();
+        var stillReferencedIds = db.ProjectVideos
+            .Where(pv => pv.VideoId != null && videoIds.Contains(pv.VideoId.Value))
+            .Select(pv => pv.VideoId!.Value)
+            .Distinct()
+            .ToHashSet();
+
+        var orphans = referencedVideos.Where(v => !stillReferencedIds.Contains(v.Id)).ToList();
+        if (orphans.Count > 0)
         {
-            var stillReferenced = db.ProjectVideos.Any(pv => pv.VideoId == video.Id);
-            if (stillReferenced)
-            {
-                continue;
-            }
+            var orphanIds = orphans.Select(v => v.Id).ToList();
+            var dbVideos = db.Videos.Where(v => orphanIds.Contains(v.Id)).ToList();
+            db.Videos.RemoveRange(dbVideos); // 级联删除分镜、方案分镜
+            db.SaveChanges();               // 一次写事务，不是每个视频一次
 
-            var segThumbnails = video.Segments
-                .Where(s => !string.IsNullOrEmpty(s.ThumbnailPath))
-                .Select(s => s.ThumbnailPath!)
-                .ToList();
-
-            var dbVideo = db.Videos.FirstOrDefault(v => v.Id == video.Id);
-            if (dbVideo is not null)
+            // 文件删除放在 DB 提交之后统一做：DB 没删成功就不该动用户的文件。
+            foreach (var video in orphans)
             {
-                db.Videos.Remove(dbVideo); // 级联删除分镜、方案分镜
-                db.SaveChanges();
+                FileHelper.DeleteGlobalVideoFiles(video.LocalPath, video.ThumbnailPath);
+                foreach (var thumb in video.Segments
+                             .Where(s => !string.IsNullOrEmpty(s.ThumbnailPath))
+                             .Select(s => s.ThumbnailPath!))
+                {
+                    TryDeleteFile(thumb);
+                }
+                _logger.LogInformation("视频无引用，已删除: {Name}", video.Name);
             }
-
-            FileHelper.DeleteGlobalVideoFiles(video.LocalPath, video.ThumbnailPath);
-            foreach (var thumb in segThumbnails)
-            {
-                TryDeleteFile(thumb);
-            }
-            _logger.LogInformation("视频无引用，已删除: {Name}", video.Name);
         }
 
         FetchProjects();
@@ -164,8 +166,8 @@ public partial class ProjectViewModel : ObservableObject
 
     // issue #16（对齐 macOS v0.8.1）：已移除「归档」——归档后项目从列表消失且无从恢复，
     // 是个只会误伤用户的无用功能。右键菜单现只保留「重命名」+ 带二次确认的「删除」。
-    // ProjectStatus.Archived 枚举与相关颜色/文案转换器保留（防御历史库里已有的归档项目切视图时不崩），
-    // 但代码里不再有任何地方把项目写成 Archived；FetchProjects 的 `!= Archived` 过滤保留无害。
+    // 后续已彻底清干净：ProjectStatus.Archived 枚举、状态色/文案分支、这里的列表过滤全部删除，
+    // 历史库里残留的归档项目由启动期 App.RestoreArchivedProjects 恢复成「已完成」重新可见。
 
     /// <summary>重命名项目。</summary>
     public void RenameProject(Project project, string newName)

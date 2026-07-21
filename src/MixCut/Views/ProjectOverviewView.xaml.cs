@@ -200,7 +200,6 @@ public partial class ProjectOverviewView : UserControl, IProjectView
                 => (Color.FromRgb(0xFF, 0xF1, 0xDC), Color.FromRgb(0xC0, 0x6F, 0x00)),
             ProjectStatus.Ready => (Color.FromRgb(0xE7, 0xF0, 0xFF), Color.FromRgb(0x1D, 0x6B, 0xE5)),
             ProjectStatus.Completed => (Color.FromRgb(0xE2, 0xF5, 0xE8), Color.FromRgb(0x2E, 0x8B, 0x57)),
-            ProjectStatus.Archived => (Color.FromRgb(0xF0, 0xF0, 0xF2), Color.FromRgb(0x99, 0x99, 0x99)),
             _ => (Color.FromRgb(0xEE, 0xEE, 0xEF), Color.FromRgb(0x66, 0x66, 0x66)),
         };
         StatusBadge.Background = new SolidColorBrush(background);

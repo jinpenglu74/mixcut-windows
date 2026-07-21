@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows.Data;
 using System.Windows.Media;
+using MixCut.Infrastructure;
 using MixCut.Models;
 
 namespace MixCut.Views.Converters;
@@ -15,9 +16,8 @@ public sealed class ProjectStatusToColorConverter : IValueConverter
         {
             ProjectStatus.Importing or ProjectStatus.Analyzing or ProjectStatus.Generating
                 => Color.FromRgb(0xF0, 0xAD, 0x4E),
-            ProjectStatus.Ready => Color.FromRgb(0x1D, 0x6B, 0xE5),
-            ProjectStatus.Completed => Color.FromRgb(0x2E, 0x8B, 0x57),
-            ProjectStatus.Archived => Color.FromRgb(0xBB, 0xBB, 0xBB),
+            ProjectStatus.Ready => ((SolidColorBrush)Theme.Accent).Color,
+            ProjectStatus.Completed => ((SolidColorBrush)Theme.Success).Color,
             _ => Color.FromRgb(0xCC, 0xCC, 0xCC),
         };
         return new SolidColorBrush(color);

@@ -15,8 +15,8 @@ public enum ProjectStatus
     Generating,
     /// <summary>已完成。</summary>
     Completed,
-    /// <summary>已归档。</summary>
-    Archived,
+    // 「已归档」已删除（issue #16）：归档后项目从列表消失且无从恢复，只会误伤用户。
+    // 历史库里残留的 Archived 由启动期 RestoreArchivedProjects 统一恢复成 Completed。
 }
 
 public static class ProjectStatusExtensions
@@ -29,7 +29,6 @@ public static class ProjectStatusExtensions
         [ProjectStatus.Ready] = "就绪",
         [ProjectStatus.Generating] = "生成中",
         [ProjectStatus.Completed] = "已完成",
-        [ProjectStatus.Archived] = "已归档",
     };
 
     /// <summary>中文显示名。</summary>

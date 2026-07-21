@@ -55,4 +55,11 @@ public class Project
     /// <summary>方案总数。</summary>
     [NotMapped]
     public int SchemeCount => Schemes.Count;
+
+    /// <summary>
+    /// 用项目名作为字符串表示。
+    /// 不只是为了好看：WPF 的 ListBoxItem 默认拿 ToString() 当无障碍名称，不重写的话
+    /// 屏幕阅读器和自动化工具在项目列表里读到的全是「MixCut.Models.Project」。
+    /// </summary>
+    public override string ToString() => string.IsNullOrWhiteSpace(Name) ? "未命名项目" : Name;
 }
