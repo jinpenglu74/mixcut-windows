@@ -143,6 +143,22 @@ public partial class ImportViewModel : ObservableObject
         (1.00, 1.00, "处理失败"),            // Failed
     };
 
+    /// <summary>
+    /// 阶段计时快照：开始时间 + 排队标记 + 最近两个进度样本（Prev→Last）。
+    /// ETA 用「最近一对样本的实测速率」计算 —— 不能用「阶段总耗时 ÷ 当前进度」：
+    /// 阶段开头的里程碑式进度（如 ASR 的提音频 10%/找模型 12%）几秒内完成，会把平均速率
+    /// 拉得虚高，估出离谱短的总时长，然后一路超期。
+    /// </summary>
+    private sealed record StageTiming(
+        VideoStage Stage, DateTime StartedUtc, bool Queued,
+        double PrevPct, DateTime PrevPctUtc, double LastPct, DateTime LastPctUtc);
+
+    /// <summary>每视频当前阶段的计时快照（心跳与 ETA 用）。key=videoId。</summary>
+    private readonly ConcurrentDictionary<Guid, StageTiming> _stageStartedAt = new();
+
+    /// <summary>心跳定时器（v0.15.0，见 <see cref="EnsureHeartbeat"/>）。仅 UI 线程访问。</summary>
+    private System.Windows.Threading.DispatcherTimer? _heartbeatTimer;
+
     /// <summary>报告某个视频在某个阶段的内部进度（0.0-1.0），换算成整体百分比并通知 UI。</summary>
     private void ReportVideoStage(Guid videoId, VideoStage stage, double stagePercent, bool queued = false)
     {
@@ -154,15 +170,141 @@ public partial class ImportViewModel : ObservableObject
         var (start, end, label) = StageRanges[idx];
         var clamped = Math.Clamp(stagePercent, 0.0, 1.0);
         var overall = start + (end - start) * clamped;
-        var pctText = queued
-            ? $"{label}·排队中…"
-            : stage is VideoStage.Completed or VideoStage.Failed
-                ? label
-                : $"{label} {clamped * 100:F0}%";
 
-        var state = new VideoProgressState(stage, clamped, overall, pctText);
+        // 心跳计时：阶段切换（或排队↔运行切换）时重置起点；进度前进时滚动 Prev←Last 样本对；结束态清除。
+        if (stage is VideoStage.Completed or VideoStage.Failed)
+        {
+            _stageStartedAt.TryRemove(videoId, out _);
+        }
+        else if (!_stageStartedAt.TryGetValue(videoId, out var t) || t.Stage != stage || t.Queued != queued)
+        {
+            var now = DateTime.UtcNow;
+            _stageStartedAt[videoId] = new StageTiming(stage, now, queued, clamped, now, clamped, now);
+        }
+        else if (clamped > t.LastPct)
+        {
+            _stageStartedAt[videoId] = t with
+            {
+                PrevPct = t.LastPct, PrevPctUtc = t.LastPctUtc,
+                LastPct = clamped, LastPctUtc = DateTime.UtcNow,
+            };
+        }
+
+        var state = new VideoProgressState(
+            stage, clamped, overall, BuildStageText(videoId, stage, clamped, label, queued));
         _videoProgress[videoId] = state;
         VideoProgressChanged?.Invoke(videoId, state);
+        EnsureHeartbeat();
+    }
+
+    /// <summary>
+    /// 阶段状态文案：「2/5 语音识别中 12% · 已用 6:24 · 预计还需 47:10」。
+    /// 已用时间由心跳每秒刷新 —— 慢机上 whisper 每 5% 才打一条进度（可能隔几分钟），
+    /// 百分比之外必须有肉眼可见的持续走动，用户才不会误判「卡死了」（CLAUDE.md §1）。
+    /// </summary>
+    private string BuildStageText(Guid videoId, VideoStage stage, double pct, string label, bool queued)
+    {
+        if (stage is VideoStage.Completed or VideoStage.Failed)
+        {
+            return label;
+        }
+        var text = queued ? $"{label}·排队中…" : $"{label} {pct * 100:F0}%";
+        if (_stageStartedAt.TryGetValue(videoId, out var t) && t.Stage == stage)
+        {
+            var elapsed = DateTime.UtcNow - t.StartedUtc;
+            if (elapsed.TotalSeconds >= 5)
+            {
+                text += $" · 已用 {FormatClock(elapsed)}";
+
+                // ETA 三条铁律（2026-07-24 用户两次当场反馈「预计时间怎么在涨」后定稿）：
+                //   ① 只在拿到**可靠实测速率**后才显示 —— 最近一对进度样本间隔 ≥15s 且有实际增量
+                //     （阶段开头几秒内完成的里程碑进度不算数，whisper 首条真实进度到达前只显示「已用」）；
+                //   ② 显示后只**倒数**：锚定最近样本时刻的估算剩余 − 距该时刻的流逝时间，新进度到达重校准；
+                //   ③ 倒数到底仍没等来新进度 → 封底显示「<1 分钟」，绝不回涨、绝不显示 0。
+                var dp = t.LastPct - t.PrevPct;
+                var gap = (t.LastPctUtc - t.PrevPctUtc).TotalSeconds;
+                if (!queued && dp > 0.005 && gap >= 15)
+                {
+                    var rate = dp / gap;   // 进度/秒（实测）
+                    var remainSec = (1 - t.LastPct) / rate
+                                    - (DateTime.UtcNow - t.LastPctUtc).TotalSeconds;
+                    if (remainSec < 60 && remainSec < gap)
+                    {
+                        text += " · 预计还需 <1 分钟";
+                    }
+                    else if (remainSec >= 60 || remainSec >= 5)
+                    {
+                        var remain = TimeSpan.FromSeconds(Math.Max(remainSec, 5));
+                        if (remain.TotalHours < 24)
+                        {
+                            text += $" · 预计还需 {FormatClock(remain)}";
+                            if (stage == VideoStage.Asr && remain.TotalMinutes > 10)
+                            {
+                                // 弱机跑大模型的明确出路提示（i5 轻薄本 + large 模型实测 0.03x 实时）。
+                                text += "（大模型在本机较慢，可到设置换小模型加速）";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return text;
+    }
+
+    private static string FormatClock(TimeSpan t) => t.TotalHours >= 1
+        ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}"
+        : $"{(int)t.TotalMinutes}:{t.Seconds:D2}";
+
+    /// <summary>
+    /// 进度心跳（v0.15.0）：每秒把处理中视频的状态文案（含已用/预计时间）重发一遍，
+    /// 保证进度区永远在走动、绝不静止。无处理中视频时自动停表，零常驻开销。
+    /// ReportVideoStage 可能从后台线程进来，定时器统一在 UI 线程创建。
+    /// </summary>
+    private void EnsureHeartbeat()
+    {
+        var disp = System.Windows.Application.Current?.Dispatcher;
+        if (disp is null)
+        {
+            return;
+        }
+        if (!disp.CheckAccess())
+        {
+            disp.BeginInvoke(EnsureHeartbeat);
+            return;
+        }
+        if (_heartbeatTimer is not null)
+        {
+            return;
+        }
+        _heartbeatTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        _heartbeatTimer.Tick += (_, _) =>
+        {
+            if (_stageStartedAt.IsEmpty)
+            {
+                _heartbeatTimer?.Stop();
+                _heartbeatTimer = null;
+                return;
+            }
+            foreach (var (videoId, t) in _stageStartedAt)
+            {
+                if (!_videoProgress.TryGetValue(videoId, out var s) || s.Stage != t.Stage)
+                {
+                    continue;
+                }
+                var newText = BuildStageText(
+                    videoId, s.Stage, s.StagePercent, StageRanges[(int)s.Stage].Label, t.Queued);
+                if (newText != s.StageLabel)
+                {
+                    var ns = s with { StageLabel = newText };
+                    _videoProgress[videoId] = ns;
+                    VideoProgressChanged?.Invoke(videoId, ns);
+                }
+            }
+        };
+        _heartbeatTimer.Start();
     }
 
     [ObservableProperty]
@@ -466,7 +608,7 @@ public partial class ImportViewModel : ObservableObject
         var asr = TranscriptionResult.Empty();
         try
         {
-            // 把视频时长传给 ASR：动态超时基于此计算。
+            // 把视频时长传给 ASR：看门狗（进度停滞才杀）基于此计算绝对上限。
             // 进度回调把 whisper 内部 0-1 进度映射到 ASR 阶段。
             var asrProgress = new Progress<double>(p =>
                 ReportVideoStage(videoId, VideoStage.Asr, p));
@@ -475,10 +617,22 @@ public partial class ImportViewModel : ObservableObject
                 videoDurationSec: video.Duration,
                 progress: asrProgress);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // v0.15.0：ASR 真失败（超时被看门狗中止 / 崩溃）就到此为止，直接判定该视频失败并给出
+            // **完整原因**（AsrException 的 message 已是「原因 + 模型名 + 换小模型建议」的人话）。
+            // 绝不再拿空文本继续跑 AI —— 那只会得到「AI 未返回有效分镜结果」，把真因彻底掩盖
+            // （2026-07-24 弱机用户实测踩坑：卡片只显示「处理失败」，看不到任何可自救的信息）。
             _logger.LogError("ASR 异常: {Message}", ex.Message);
-            video.ErrorMessage = (video.ErrorMessage ?? string.Empty) + $"\n语音识别失败：{ExceptionTranslator.ToUserMessage(ex)}";
+            video.Status = VideoStatus.Failed;
+            video.ErrorMessage = ex is Services.ASR.AsrException
+                ? ex.Message
+                : "语音识别失败：" + ExceptionTranslator.ToUserMessage(ex);
+            await db.SaveChangesAsync();
+            ReportVideoStage(videoId, VideoStage.Failed, 1.0);
+            _logger.LogInformation("分析完成: video={Name}, status={Status}（ASR 失败提前结束）",
+                video.Name, video.Status);
+            return;
         }
 
         video.Transcript = asr.Text;

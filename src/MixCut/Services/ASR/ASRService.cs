@@ -129,9 +129,19 @@ public sealed class ASRService
                 {
                     _logger.LogWarning("Whisper 首次失败（{Reason}），重试一次", ex.Message);
                     progress?.Report(0.15);
-                    result = await RunWhisperCppAsync(
-                        modelPath, tempWav, language,
-                        videoDurationSec, whisperProgress, cancellationToken);
+                    try
+                    {
+                        result = await RunWhisperCppAsync(
+                            modelPath, tempWav, language,
+                            videoDurationSec, whisperProgress, cancellationToken);
+                    }
+                    catch (WhisperRetryableException ex2)
+                    {
+                        // 重试也失败 → 抛完整人话（模型名 + 原因 + 换小模型建议），
+                        // 让 ImportViewModel 直接判定该视频失败并原样展示（不再拿空文本去跑 AI）。
+                        throw AsrException.WhisperStalled(
+                            Path.GetFileNameWithoutExtension(modelPath), ex2.Message);
+                    }
                 }
                 progress?.Report(1.0);
 
@@ -175,13 +185,17 @@ public sealed class ASRService
         var outputPrefix = Path.Combine(FileHelper.TempDirectory, $"whisper_{Guid.NewGuid():N}");
         var jsonPath = outputPrefix + ".json";
 
-        // 动态超时：large-v3-turbo 在 8 核 CPU 大约 0.5x 实时，给 4x 余量。
-        // 起跳 5 分钟，最长 30 分钟（防 1h+ 长视频锁死）。
-        // P0-27：duration ≤ 0 表示元数据提取失败（损坏/异常容器），按 duration*4 会得到 5min 下限，
-        // 大文件必然误超时。此时无从估算真实时长，直接给 30min 上限保守值，宁可多等也别冤杀。
-        var dynTimeout = videoDurationSec > 0
-            ? TimeSpan.FromSeconds(Math.Clamp(videoDurationSec * 4, 300, 1800))
-            : TimeSpan.FromSeconds(1800);
+        // v0.15.0 超时改「按进度判活」（对齐导出 v0.8.2 的 stall-based 思路）：
+        // 旧公式「时长×4，封顶 30min」假设机器不慢 —— 但 4 核轻薄本（i5-1145G7）+ 后台企业软件抢占下
+        // large-v3-turbo 实测只有 0.03~0.3× 实时，96s 视频 6.4 分钟才到 12%，被绝对超时反复冤杀
+        // （2026-07-24 实测：进程 CPU 一直满负荷、进度一直在涨，却被杀了两次 → 用户以为「卡死」）。
+        // 新规则：**进度还在涨就绝不杀**；只有进度停滞 stallLimit 分钟（真挂死）或超出宽松绝对上限
+        // （防「永远蠕动」）才中止。whisper --print-progress 每 5% 打一条，慢机 5% 可能要 3-4 分钟，
+        // 故 stallLimit 给 10 分钟。
+        var stallLimit = TimeSpan.FromMinutes(10);
+        var ceiling = videoDurationSec > 0
+            ? TimeSpan.FromSeconds(Math.Clamp(videoDurationSec * 60, 1800, 4 * 3600))
+            : TimeSpan.FromHours(4);
 
         // 留 2 个逻辑核给系统 + UI（之前吃满所有核导致风扇狂转）。
         // 8 核 → 6 线程；4 核 → 2 线程；2 核 → 2 线程。
@@ -244,6 +258,10 @@ public sealed class ASRService
         // stdout 直接丢弃（whisper 把识别文本也写 stdout，我们用 JSON 文件结果即可）。
         var drainOut = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
 
+        // 进度活性追踪：看门狗据此判断「还在干活」还是「真挂死」。
+        var lastProgressTicks = DateTime.UtcNow.Ticks;
+        var lastPct = 0;
+
         // stderr 行式读取，解析 "progress = N%" 报告给上层。
         var drainErr = Task.Run(async () =>
         {
@@ -256,6 +274,11 @@ public sealed class ASRService
                     var m = ProgressRegex.Match(line);
                     if (m.Success && int.TryParse(m.Groups[1].Value, out var pct))
                     {
+                        if (pct > Volatile.Read(ref lastPct))
+                        {
+                            Volatile.Write(ref lastPct, pct);
+                            Interlocked.Exchange(ref lastProgressTicks, DateTime.UtcNow.Ticks);
+                        }
                         progress?.Report(Math.Clamp(pct / 100.0, 0.0, 1.0));
                     }
                 }
@@ -267,9 +290,41 @@ public sealed class ASRService
         }, cancellationToken);
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(dynTimeout);
-        _logger.LogInformation("启动 whisper-cli: 视频 {Dur}s, 超时 {Timeout}s, threads={T}",
-            videoDurationSec, dynTimeout.TotalSeconds, threads);
+        var runSw = Stopwatch.StartNew();
+        string? killReason = null;
+
+        // 看门狗：每 10s 巡检一次。进度停滞超 stallLimit 或总时长超 ceiling 才取消，进度在涨绝不杀。
+        var watchdog = Task.Run(async () =>
+        {
+            try
+            {
+                while (!process.HasExited)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), timeoutCts.Token);
+                    if (process.HasExited) return;
+                    var pct = Volatile.Read(ref lastPct);
+                    var idle = TimeSpan.FromTicks(
+                        DateTime.UtcNow.Ticks - Interlocked.Read(ref lastProgressTicks));
+                    if (idle > stallLimit)
+                    {
+                        killReason = $"进度停滞 {idle.TotalMinutes:F0} 分钟（停在 {pct}%）";
+                        timeoutCts.Cancel();
+                        return;
+                    }
+                    if (runSw.Elapsed > ceiling)
+                    {
+                        killReason = $"运行超 {ceiling.TotalMinutes:F0} 分钟仍未完成（当前 {pct}%）";
+                        timeoutCts.Cancel();
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { /* 进程退出 / 用户取消，正常收尾 */ }
+        });
+
+        _logger.LogInformation(
+            "启动 whisper-cli: 视频 {Dur}s, 停滞上限 {Stall}min / 绝对上限 {Ceil}min, threads={T}",
+            videoDurationSec, stallLimit.TotalMinutes, ceiling.TotalMinutes, threads);
 
         try
         {
@@ -282,10 +337,17 @@ public sealed class ASRService
             {
                 throw;
             }
-            _logger.LogError("Whisper 进程超时（{Min:F1} 分钟），强制终止", dynTimeout.TotalMinutes);
-            throw new WhisperRetryableException($"超时 {dynTimeout.TotalMinutes:F1} 分钟");
+            _logger.LogError("Whisper 被看门狗中止：{Reason}", killReason ?? "未知原因");
+            throw new WhisperRetryableException(killReason ?? "看门狗中止");
         }
-        await Task.WhenAll(drainOut, drainErr);
+        finally
+        {
+            timeoutCts.Cancel();   // 让看门狗退出巡检循环
+        }
+        await Task.WhenAll(drainOut, drainErr, watchdog);
+        _logger.LogInformation("[AsrSpeedDiag] whisper 完成：{Dur:F0}s 音频用时 {Elapsed:F0}s（{Speed:F2}x 实时）",
+            videoDurationSec, runSw.Elapsed.TotalSeconds,
+            videoDurationSec > 0 ? videoDurationSec / Math.Max(1, runSw.Elapsed.TotalSeconds) : 0);
 
         if (process.ExitCode != 0)
         {
