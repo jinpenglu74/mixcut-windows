@@ -20,8 +20,14 @@ public partial class ExportView : UserControl, IProjectView
     private readonly ExportService _exportService;
     private readonly Services.Dubbing.DubExportService _dubExport;
     private readonly AppSettings _settings;
+    private readonly Services.Dubbing.VocalSeparationService _vocalSep;
+    private readonly Services.Bgm.BgmLibraryService _bgmLibrary;
     private readonly Action<NavigationItem>? _navigate;
     private string? _lastOutputDir;
+
+    /// <summary>#22：BGM 下拉当前对应的库条目（index 0 = 「保留原 BGM」）。</summary>
+    private List<Services.Bgm.BgmItem> _bgmItems = new();
+    private bool _suppressBgmEvent;
 
     /// <summary>QW-11：批量导出的取消令牌。ExportService 早就支持 CancellationToken，
     /// 但 view 从来没传过 —— 现在接上，「取消」按钮 / ESC 能真正中断长任务。</summary>
@@ -34,12 +40,16 @@ public partial class ExportView : UserControl, IProjectView
 
     public ExportView(SchemeViewModel schemeVM, ExportService exportService,
         Services.Dubbing.DubExportService dubExport, AppSettings settings,
+        Services.Dubbing.VocalSeparationService vocalSep,
+        Services.Bgm.BgmLibraryService bgmLibrary,
         Action<NavigationItem>? navigate = null)
     {
         _schemeVM = schemeVM;
         _exportService = exportService;
         _dubExport = dubExport;
         _settings = settings;
+        _vocalSep = vocalSep;
+        _bgmLibrary = bgmLibrary;
         _navigate = navigate;
         InitializeComponent();
 
@@ -68,6 +78,103 @@ public partial class ExportView : UserControl, IProjectView
             : new System.Windows.Media.SolidColorBrush(
                 System.Windows.Media.Color.FromRgb(0xC0, 0x6F, 0x00));    // 橙：仅软件
         UpdateQualityHint();
+
+        // #22：BGM 列表初始化 + 每次进入导出页刷新（用户可能刚在「BGM 库」上传/删除了音乐）。
+        _ = RefreshBgmListAsync();
+        IsVisibleChanged += async (_, e) =>
+        {
+            if (e.NewValue is true) await RefreshBgmListAsync();
+        };
+    }
+
+    // ---- 背景音乐（issue #22）----
+
+    /// <summary>当前生效的 BGM 路径；null = 保留原 BGM。以 AppSettings 为单一真源（全局状态，切项目不重置）。</summary>
+    private string? CurrentBgmPath =>
+        string.IsNullOrEmpty(_settings.SelectedBgmPath) ? null : _settings.SelectedBgmPath;
+
+    /// <summary>
+    /// 刷新 BGM 下拉：重扫库 + 校验已选路径还存在（可能刚在「BGM 库」删了）——
+    /// 不存在则重置回「保留原 BGM」（issue #22 §3.2）。
+    /// </summary>
+    private async System.Threading.Tasks.Task RefreshBgmListAsync()
+    {
+        try
+        {
+            _bgmItems = (await _bgmLibrary.ListAsync()).ToList();
+            _suppressBgmEvent = true;
+            BgmCombo.Items.Clear();
+            BgmCombo.Items.Add("保留原 BGM");
+            foreach (var it in _bgmItems)
+            {
+                BgmCombo.Items.Add($"{it.FileName}（{Utilities.FrameTime.HumanDuration(it.DurationSeconds)}）");
+            }
+
+            var stored = _settings.SelectedBgmPath;
+            var idx = 0;
+            if (!string.IsNullOrEmpty(stored))
+            {
+                var found = _bgmItems.FindIndex(
+                    i => string.Equals(i.FullPath, stored, StringComparison.OrdinalIgnoreCase));
+                if (found >= 0 && File.Exists(stored))
+                {
+                    idx = found + 1;
+                }
+                else
+                {
+                    _settings.SelectedBgmPath = string.Empty;   // 文件没了 → 重置
+                }
+            }
+            BgmCombo.SelectedIndex = idx;
+            _suppressBgmEvent = false;
+            BgmVolumeSlider.Value = _settings.BgmVolumePercent;
+            UpdateBgmUiState();
+        }
+        catch (Exception ex)
+        {
+            _suppressBgmEvent = false;
+            Serilog.Log.Warning(ex, "[BgmDiag] 刷新导出页 BGM 下拉失败");
+        }
+    }
+
+    private void OnBgmChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressBgmEvent) return;
+        var idx = BgmCombo.SelectedIndex;
+        _settings.SelectedBgmPath = idx > 0 && idx - 1 < _bgmItems.Count
+            ? _bgmItems[idx - 1].FullPath
+            : string.Empty;
+        UpdateBgmUiState();
+    }
+
+    private void OnBgmVolumeChanged(object? sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (BgmVolumeLabel is null) return;   // XAML 初始化期间的首次触发
+        var v = (int)Math.Round(e.NewValue);
+        BgmVolumeLabel.Text = v + "%";
+        _settings.BgmVolumePercent = v;
+    }
+
+    /// <summary>选中 BGM 后显示音量滑杆 + 行为说明；库为空时显示引导文案。</summary>
+    private void UpdateBgmUiState()
+    {
+        var selected = BgmCombo.SelectedIndex > 0;
+        BgmVolumePanel.Visibility = selected ? Visibility.Visible : Visibility.Collapsed;
+        if (selected)
+        {
+            BgmHintText.Text = "将去除各分镜原 BGM、只保留口播，再铺上所选音乐"
+                + "（比成片长则截断，短则循环，结尾 1 秒淡出）。首次会对相关视频做人声分离，耗时较长。";
+            BgmHintText.Visibility = Visibility.Visible;
+        }
+        else if (_bgmItems.Count == 0)
+        {
+            BgmHintText.Text = "BGM 库还没有音乐。到侧边栏「BGM 库」上传后，可在这里选一条替换成片背景音乐。";
+            BgmHintText.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            BgmHintText.Visibility = Visibility.Collapsed;
+        }
     }
 
     /// <summary>#15：空态「去生成方案」→ 跳到混剪方案页（消除死胡同）。</summary>
@@ -372,6 +479,18 @@ public partial class ExportView : UserControl, IProjectView
         if (_isExporting) return;
         var selected = _schemeVM.Schemes.Where(s => _selectedSchemeIds.Contains(s.Id)).ToList();
         if (selected.Count == 0) return;
+
+        // #22：导出开始前再校验一次所选 BGM 文件还在（可能被外部删了）。
+        if (CurrentBgmPath is { } bgm && !File.Exists(bgm))
+        {
+            Shared.MixCutDialog.Error(
+                Window.GetWindow(this),
+                "背景音乐文件不存在",
+                "所选背景音乐文件已不存在，请到「BGM 库」确认后重新选择。");
+            await RefreshBgmListAsync();
+            return;
+        }
+
         if (HasDubVariants(selected))
         {
             await ExportDubCombosAsync();
@@ -387,6 +506,9 @@ public partial class ExportView : UserControl, IProjectView
         Resolution = (ExportResolution)Math.Max(0, ResolutionCombo.SelectedIndex),
         Codec = (ExportCodec)Math.Max(0, CodecCombo.SelectedIndex),
         Quality = (ExportQuality)Math.Max(0, QualityCombo.SelectedIndex),
+        // #22：null = 保留原 BGM（现有行为逐字节不变）
+        BgmPath = CurrentBgmPath,
+        BgmVolume = _settings.BgmVolumePercent / 100.0,
     };
 
     // ---- 批量导出（v0.6.0 起单方案区块已删除，统一走筛选导出） ----
@@ -403,6 +525,20 @@ public partial class ExportView : UserControl, IProjectView
         if (schemes.Count == 0)
         {
             return;
+        }
+
+        // #22：选了 BGM 时先确认（说明替换行为 + 首次分离耗时），普通导出原本没有确认弹窗、行为不变。
+        var bgmMode = CurrentBgmPath is not null;
+        if (bgmMode)
+        {
+            var ok = Shared.MixCutDialog.Confirm(
+                Window.GetWindow(this),
+                "将替换成片背景音乐",
+                "所有成片将去除各分镜原 BGM、只保留口播，再铺上所选音乐"
+                + "（比成片长则截断，短则循环，结尾 1 秒淡出）。\n"
+                + "首次会对相关视频做人声分离，耗时较长。",
+                confirmText: "继续导出", cancelText: "取消");
+            if (!ok) return;
         }
 
         var dialog = new OpenFolderDialog { Title = "选择输出文件夹" };
@@ -429,7 +565,7 @@ public partial class ExportView : UserControl, IProjectView
         for (var i = 0; i < schemes.Count; i++)
         {
             var scheme = schemes[i];
-            var input = ExportInput.FromScheme(scheme);
+            var input = ExportInput.FromScheme(scheme, useVocalsAudio: bgmMode);
             if (input is null)
             {
                 skipped++;
@@ -482,7 +618,179 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
-        await RunSchemeBatchAsync(tasks, config, outputDir, skipped);
+        await RunSchemeBatchWithPrecheckAsync(tasks, config, outputDir, skipped);
+    }
+
+    // ---- #22：BGM 模式的人声分离预检 ----
+
+    /// <summary>预检的分离对象：原视频路径 + 内容哈希 + 展示名。</summary>
+    private sealed record VocalsSource(string VideoPath, string Hash, string Name);
+
+    /// <summary>从方案集合收集全部源视频（去重）。</summary>
+    private static List<VocalsSource> CollectVocalsSources(IEnumerable<MixScheme> schemes)
+    {
+        var seen = new Dictionary<string, VocalsSource>(StringComparer.OrdinalIgnoreCase);
+        foreach (var scheme in schemes)
+        {
+            foreach (var ss in scheme.OrderedSegments)
+            {
+                var video = ss.Segment?.Video;
+                if (video is null) continue;
+                var key = string.IsNullOrEmpty(video.ContentHash) ? "path:" + video.LocalPath : video.ContentHash;
+                if (!seen.ContainsKey(key))
+                {
+                    seen[key] = new VocalsSource(video.LocalPath, video.ContentHash ?? string.Empty, video.Name);
+                }
+            }
+        }
+        return seen.Values.ToList();
+    }
+
+    /// <summary>从配音导出任务收集需要 vocals 的源视频（specs 里的 VocalsSlice，去重）。重试路径用。</summary>
+    private static List<VocalsSource> CollectVocalsSourcesFromDubTasks(
+        IEnumerable<(string Name, Services.Dubbing.DubExportInput Input, string Item3)> tasks)
+    {
+        var seen = new Dictionary<string, VocalsSource>(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in tasks)
+        {
+            foreach (var spec in t.Input.Segments)
+            {
+                if (spec.Vocals is not { } vs) continue;
+                var key = string.IsNullOrEmpty(vs.SourceVideoHash) ? "path:" + vs.SourceVideoPath : vs.SourceVideoHash;
+                if (!seen.ContainsKey(key))
+                {
+                    seen[key] = new VocalsSource(
+                        vs.SourceVideoPath, vs.SourceVideoHash, Path.GetFileName(vs.SourceVideoPath));
+                }
+            }
+        }
+        return seen.Values.ToList();
+    }
+
+    /// <summary>
+    /// 逐个确保源视频的 vocals.wav 存在（已分离秒回缓存；未分离现场跑 demucs，进度「人声分离 i/n：视频名」）。
+    /// 返回失败清单（hash/path key → 人话原因）+ 是否被取消。
+    /// ⚠ 取消时调用方必须直接收尾返回，禁止带着「部分视频未检查」的状态继续组装（issue #22 红线）。
+    /// </summary>
+    private async System.Threading.Tasks.Task<(Dictionary<string, string> Failed, bool Canceled)>
+        EnsureVocalsAsync(IReadOnlyList<VocalsSource> sources, CancellationToken token)
+    {
+        var failed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < sources.Count; i++)
+        {
+            if (token.IsCancellationRequested) return (failed, true);
+            var s = sources[i];
+            var key = string.IsNullOrEmpty(s.Hash) ? "path:" + s.VideoPath : s.Hash;
+            ProgressStatusText.Text = $"人声分离 {i + 1}/{sources.Count}：{s.Name}";
+            ProgressDetailText.Text = string.Empty;
+            ProgressBar.Value = (double)i / Math.Max(1, sources.Count);
+
+            if (string.IsNullOrEmpty(s.Hash))
+            {
+                failed[key] = "无法识别视频文件指纹，请到「素材导入」重新导入该视频";
+                continue;
+            }
+            if (string.IsNullOrEmpty(s.VideoPath) || !File.Exists(s.VideoPath))
+            {
+                failed[key] = "视频文件已不存在（被移动、重命名或删除）";
+                continue;
+            }
+            try
+            {
+                var idx = i;
+                await _vocalSep.SeparateAsync(
+                    s.VideoPath, s.Hash,
+                    onProgress: new Progress<string>(txt => ProgressDetailText.Text = txt),
+                    onPercent: new Progress<double>(p =>
+                    {
+                        var frac = p > 1.5 ? p / 100.0 : p;   // 兼容 0-1 / 0-100 两种刻度
+                        ProgressBar.Value = (idx + Math.Clamp(frac, 0, 1)) / Math.Max(1, sources.Count);
+                    }),
+                    ct: token);
+            }
+            catch (OperationCanceledException)
+            {
+                return (failed, true);
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Warning(ex, "[BgmDiag] 预检人声分离失败 video={Video}", s.Name);
+                failed[key] = ex is Services.Dubbing.DubException
+                    ? ex.Message
+                    : MixCut.ViewModels.ExceptionTranslator.ToUserMessage(ex);
+            }
+        }
+        return (failed, false);
+    }
+
+    /// <summary>
+    /// 方案批量导出的 BGM 预检外壳：没选 BGM 直接透传（行为不变）；选了则先逐视频保证 vocals.wav，
+    /// 分离失败的视频 → 涉及它的方案整体进失败清单（不导、不静默跳过），其余照常导出。
+    /// 「只重试失败的」也走本外壳 —— 重试会重新预检（给分离失败一个自愈机会）。
+    /// </summary>
+    private async System.Threading.Tasks.Task RunSchemeBatchWithPrecheckAsync(
+        List<(MixScheme Scheme, ExportInput Input, string OutputPath)> tasks,
+        ExportConfig config, string outputDir, int skipped = 0)
+    {
+        if (config.BgmPath is null || tasks.Count == 0)
+        {
+            await RunSchemeBatchAsync(tasks, config, outputDir, skipped);
+            return;
+        }
+        if (_isExporting) return;
+
+        _exportCts?.Dispose();
+        _exportCts = new CancellationTokenSource();
+        var token = _exportCts.Token;
+        _isExporting = true;
+        ExportButton.IsEnabled = false;
+        CancelExportButton.IsEnabled = true;
+        CompletePanel.Visibility = Visibility.Collapsed;
+        ErrorPanel.Visibility = Visibility.Collapsed;
+        ProgressSection.Visibility = Visibility.Visible;
+        ProgressTitle.Text = "替换背景音乐前的准备（人声分离）";
+
+        (Dictionary<string, string> Failed, bool Canceled) pre;
+        try
+        {
+            pre = await EnsureVocalsAsync(CollectVocalsSources(tasks.Select(t => t.Scheme)), token);
+        }
+        finally
+        {
+            _isExporting = false;   // 后续 RunSchemeBatchAsync 自己重新置位
+        }
+        if (pre.Canceled)
+        {
+            // 红线：预检中途取消 → 干净收尾返回，绝不带着「部分视频未检查」继续组装任务。
+            ProgressSection.Visibility = Visibility.Collapsed;
+            CancelExportButton.IsEnabled = false;
+            UpdateExportButtonText();
+            Components.ToastService.Show("已取消导出", Components.ToastStyle.Warning);
+            return;
+        }
+
+        var runnable = new List<(MixScheme Scheme, ExportInput Input, string OutputPath)>();
+        var preFailedTasks = new List<(MixScheme Scheme, ExportInput Input, string OutputPath)>();
+        var preErrors = new List<string>();
+        foreach (var t in tasks)
+        {
+            var bad = CollectVocalsSources(new[] { t.Scheme })
+                .FirstOrDefault(s => pre.Failed.ContainsKey(
+                    string.IsNullOrEmpty(s.Hash) ? "path:" + s.VideoPath : s.Hash));
+            if (bad is null)
+            {
+                runnable.Add(t);
+            }
+            else
+            {
+                preFailedTasks.Add(t);
+                var reason = pre.Failed[string.IsNullOrEmpty(bad.Hash) ? "path:" + bad.VideoPath : bad.Hash];
+                preErrors.Add(
+                    $"{t.Scheme.Name}: 视频「{bad.Name}」人声分离失败：{reason}。无法去除原 BGM，该方案未导出");
+            }
+        }
+
+        await RunSchemeBatchAsync(runnable, config, outputDir, skipped, preErrors, preFailedTasks);
     }
 
     /// <summary>
@@ -493,7 +801,9 @@ public partial class ExportView : UserControl, IProjectView
     /// </summary>
     private async System.Threading.Tasks.Task RunSchemeBatchAsync(
         List<(MixScheme Scheme, ExportInput Input, string OutputPath)> tasks,
-        ExportConfig config, string outputDir, int skipped = 0)
+        ExportConfig config, string outputDir, int skipped = 0,
+        List<string>? preErrors = null,
+        List<(MixScheme Scheme, ExportInput Input, string OutputPath)>? preFailedTasks = null)
     {
         // #14（对齐 macOS v0.7.x）：所有导出一律串行，concurrency 恒为 1（一条一条导，避免占满机器）。
         var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
@@ -516,9 +826,13 @@ public partial class ExportView : UserControl, IProjectView
         _isExporting = true;
 
         var success = 0;
-        var errors = new List<string>();
+        // #22：BGM 预检失败的方案作为「已失败」带入 —— 出现在失败清单里且可被「只重试失败的」重跑
+        // （重试走 RunSchemeBatchWithPrecheckAsync 会重新预检分离）。
+        var errors = new List<string>(preErrors ?? (IEnumerable<string>)Array.Empty<string>());
         // 失败任务本身也要留下来，否则「只重试失败的」无从下手（原来只存了错误文案字符串）。
-        var failedTasks = new List<(MixScheme Scheme, ExportInput Input, string OutputPath)>();
+        var failedTasks = new List<(MixScheme Scheme, ExportInput Input, string OutputPath)>(
+            preFailedTasks ?? (IEnumerable<(MixScheme, ExportInput, string)>)Array.Empty<(MixScheme, ExportInput, string)>());
+        var totalAll = tasks.Count + failedTasks.Count;   // 结果统计含预检失败的
         var completed = 0;
         var canceled = false;
         var currentTaskNames = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
@@ -593,11 +907,12 @@ public partial class ExportView : UserControl, IProjectView
         else
         {
             ShowResultPanel(
-                success, tasks.Count, "个", errors, outputDir,
-                retry: failedTasks.Count == 0 ? null : () => RunSchemeBatchAsync(failedTasks, config, outputDir));
+                success, totalAll, "个", errors, outputDir,
+                // #22：重试走预检外壳 —— 分离失败的方案重试时会重新分离，而不是原样再失败一遍。
+                retry: failedTasks.Count == 0 ? null : () => RunSchemeBatchWithPrecheckAsync(failedTasks, config, outputDir));
             Components.ToastService.Show(
                 success > 0
-                    ? $"⚠ 部分失败：成功 {success}/{tasks.Count}"
+                    ? $"⚠ 部分失败：成功 {success}/{totalAll}"
                     : "导出全部失败",
                 success > 0 ? Components.ToastStyle.Warning : Components.ToastStyle.Error);
         }
@@ -735,6 +1050,7 @@ public partial class ExportView : UserControl, IProjectView
         if (schemes.Count == 0) return;
 
         // 展开每个方案的全部配音组合（笛卡尔积，每方案封顶 MaxCombos）。
+        var bgmMode = CurrentBgmPath is not null;   // #22：BGM 模式 → 原声段用 vocals、配音段不混 bgm.wav
         var jobs = new List<(string Name, Services.Dubbing.DubExportInput Input, string FileBase)>();
         var truncatedSchemes = 0;
         foreach (var scheme in schemes)
@@ -745,7 +1061,7 @@ public partial class ExportView : UserControl, IProjectView
             var schemeName = SanitizeFileName(scheme.Name);
             foreach (var combo in plan.Combos)
             {
-                var input = Services.Dubbing.DubExportInput.From(scheme, combo.Choices);
+                var input = Services.Dubbing.DubExportInput.From(scheme, combo.Choices, useVocalsAudio: bgmMode);
                 if (input is null) continue;
                 jobs.Add(($"{scheme.Name} {combo.NameSuffix}", input, $"{strategyName}_{schemeName}{SanitizeFileName(combo.NameSuffix)}"));
             }
@@ -761,13 +1077,17 @@ public partial class ExportView : UserControl, IProjectView
             return;
         }
 
-        // 确认弹窗（PRD §7.2）：先告知将生成多少条。
+        // 确认弹窗（PRD §7.2）：先告知将生成多少条；#22 选了 BGM 时说明替换行为 + 首次分离耗时。
         var truncNote = truncatedSchemes > 0 ? $"\n（有 {truncatedSchemes} 个方案组合数超上限，已按每方案前 {Services.Dubbing.SchemeComboPlanner.MaxCombos} 条截取）" : "";
+        var bgmNote = bgmMode
+            ? "\n已选择替换背景音乐：成片将去除原 BGM、只保留口播，再铺上所选音乐（长截断/短循环/结尾 1 秒淡出）；"
+              + "首次会对相关视频做人声分离，耗时较长。"
+            : "";
         var confirmed = Shared.MixCutDialog.Confirm(
             Window.GetWindow(this),
             $"将从 {schemes.Count} 个方案生成 {jobs.Count} 条视频",
             "画面保持不变，按每个分镜的「原声 + 各改写版」做全排列组合。\n"
-            + $"生成过程串行进行（一条一条导，不占满机器），期间可随时取消。{truncNote}",
+            + $"生成过程串行进行（一条一条导，不占满机器），期间可随时取消。{truncNote}{bgmNote}",
             confirmText: $"生成 {jobs.Count} 条", cancelText: "取消");
         if (!confirmed) return;
 
@@ -800,13 +1120,96 @@ public partial class ExportView : UserControl, IProjectView
             }
         }
 
-        await RunDubBatchAsync(tasks, config, outputDir);
+        await RunDubBatchWithPrecheckAsync(tasks, config, outputDir);
+    }
+
+    /// <summary>
+    /// 配音组合导出的 BGM 预检外壳（对齐 <see cref="RunSchemeBatchWithPrecheckAsync"/>）：
+    /// 分离失败的视频 → 涉及它的全部组合进失败清单（逐视频聚合成一条人话），其余照常导出；
+    /// 预检取消 → 干净收尾；重试重新预检。
+    /// </summary>
+    private async System.Threading.Tasks.Task RunDubBatchWithPrecheckAsync(
+        List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)> tasks,
+        ExportConfig config, string outputDir)
+    {
+        if (config.BgmPath is null || tasks.Count == 0)
+        {
+            await RunDubBatchAsync(tasks, config, outputDir);
+            return;
+        }
+        if (_isExporting) return;
+
+        _exportCts?.Dispose();
+        _exportCts = new CancellationTokenSource();
+        var token = _exportCts.Token;
+        _isExporting = true;
+        ExportButton.IsEnabled = false;
+        CancelExportButton.IsEnabled = true;
+        CompletePanel.Visibility = Visibility.Collapsed;
+        ErrorPanel.Visibility = Visibility.Collapsed;
+        ProgressSection.Visibility = Visibility.Visible;
+        ProgressTitle.Text = "替换背景音乐前的准备（人声分离）";
+
+        (Dictionary<string, string> Failed, bool Canceled) pre;
+        try
+        {
+            pre = await EnsureVocalsAsync(CollectVocalsSourcesFromDubTasks(tasks), token);
+        }
+        finally
+        {
+            _isExporting = false;
+        }
+        if (pre.Canceled)
+        {
+            ProgressSection.Visibility = Visibility.Collapsed;
+            CancelExportButton.IsEnabled = false;
+            UpdateExportButtonText();
+            Components.ToastService.Show("已取消导出", Components.ToastStyle.Warning);
+            return;
+        }
+
+        string KeyOf(Services.Dubbing.VocalsSlice vs) =>
+            string.IsNullOrEmpty(vs.SourceVideoHash) ? "path:" + vs.SourceVideoPath : vs.SourceVideoHash;
+
+        var runnable = new List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>();
+        var preFailedTasks = new List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>();
+        // 逐视频聚合失败文案：「视频 X 分离失败 → 涉及 N 条组合均未导出」，不逐条刷屏。
+        var failCountByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var failNameByKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var t in tasks)
+        {
+            var badKey = t.Input.Segments
+                .Where(s => s.Vocals is not null)
+                .Select(s => KeyOf(s.Vocals!))
+                .FirstOrDefault(k => pre.Failed.ContainsKey(k));
+            if (badKey is null)
+            {
+                runnable.Add(t);
+            }
+            else
+            {
+                preFailedTasks.Add(t);
+                failCountByKey[badKey] = failCountByKey.TryGetValue(badKey, out var n) ? n + 1 : 1;
+                if (!failNameByKey.ContainsKey(badKey))
+                {
+                    var vs = t.Input.Segments.First(s => s.Vocals is not null && KeyOf(s.Vocals!) == badKey).Vocals!;
+                    failNameByKey[badKey] = Path.GetFileName(vs.SourceVideoPath);
+                }
+            }
+        }
+        var preErrors = failCountByKey.Select(kv =>
+            $"视频「{failNameByKey[kv.Key]}」人声分离失败：{pre.Failed[kv.Key]}。" +
+            $"无法去除原 BGM，涉及的 {kv.Value} 条组合均未导出").ToList();
+
+        await RunDubBatchAsync(runnable, config, outputDir, preErrors, preFailedTasks);
     }
 
     /// <summary>执行一批配音组合导出。抽出来同样是为了支持「只重试失败的 N 条」。</summary>
     private async System.Threading.Tasks.Task RunDubBatchAsync(
         List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)> tasks,
-        ExportConfig config, string outputDir)
+        ExportConfig config, string outputDir,
+        List<string>? preErrors = null,
+        List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>? preFailedTasks = null)
     {
         // #14（对齐 macOS v0.7.x）：配音组合导出同样一律串行，concurrency 恒为 1。
         var concurrency = Infrastructure.ConcurrencyPolicy.MaxExportConcurrency(tasks.Count);
@@ -824,8 +1227,12 @@ public partial class ExportView : UserControl, IProjectView
         _isExporting = true;
 
         var success = 0;
-        var errors = new List<string>();
-        var failedTasks = new List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>();
+        // #22：BGM 预检失败的组合作为「已失败」带入（重试走预检外壳会重新分离）。
+        var errors = new List<string>(preErrors ?? (IEnumerable<string>)Array.Empty<string>());
+        var failedTasks = new List<(string Name, MixCut.Services.Dubbing.DubExportInput Input, string Item3)>(
+            preFailedTasks ?? (IEnumerable<(string, MixCut.Services.Dubbing.DubExportInput, string)>)
+                Array.Empty<(string, MixCut.Services.Dubbing.DubExportInput, string)>());
+        var totalAll = tasks.Count + failedTasks.Count;
         var completed = 0;
         var canceled = false;
         var current = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
@@ -882,9 +1289,10 @@ public partial class ExportView : UserControl, IProjectView
         else
         {
             ShowResultPanel(
-                success, tasks.Count, "条", errors, outputDir,
-                retry: failedTasks.Count == 0 ? null : () => RunDubBatchAsync(failedTasks, config, outputDir));
-            Components.ToastService.Show(success > 0 ? $"⚠ 部分失败：成功 {success}/{tasks.Count}" : "配音导出全部失败",
+                success, totalAll, "条", errors, outputDir,
+                // #22：重试走预检外壳 —— 分离失败的组合重试时会重新分离。
+                retry: failedTasks.Count == 0 ? null : () => RunDubBatchWithPrecheckAsync(failedTasks, config, outputDir));
+            Components.ToastService.Show(success > 0 ? $"⚠ 部分失败：成功 {success}/{totalAll}" : "配音导出全部失败",
                 success > 0 ? Components.ToastStyle.Warning : Components.ToastStyle.Error);
         }
 

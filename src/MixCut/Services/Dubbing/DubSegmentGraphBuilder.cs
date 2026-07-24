@@ -15,7 +15,10 @@ public readonly record struct CaptionOverlay(int InputIndex, int X, int Y, doubl
 /// </summary>
 public static class DubSegmentGraphBuilder
 {
-    private const string Loudnorm = "loudnorm=I=-16:TP=-1.5:LRA=11";
+    // 后缀消毒链见 FFmpegRunner.LoudnormSanitize：loudnorm 遇纯静音音轨会产 NaN 采样导致
+    // AAC 编码 exit -22；同时把 loudnorm 抬到 192kHz 的采样率锁回 44100（与主导出链同源一致）。
+    private const string Loudnorm =
+        "loudnorm=I=-16:TP=-1.5:LRA=11," + VideoProcessing.FFmpegRunner.LoudnormSanitize;
     private const double SilenceEpsilon = 0.001;
     /// <summary>混音时 BGM 相对音量（人声为主、BGM 垫底）。</summary>
     public const double BgmGain = 0.6;
@@ -30,7 +33,10 @@ public static class DubSegmentGraphBuilder
         int dubAudioInputIndex,
         int freezePadFrames,
         double trailingSilence,
-        int? bgmInputIndex = null)
+        int? bgmInputIndex = null,
+        int? vocalsInputIndex = null,
+        double vocalsStart = 0,
+        double vocalsEnd = 0)
     {
         int w = outputWidth, h = outputHeight;
         var fpsInt = (int)Math.Round(fps);
@@ -106,9 +112,20 @@ public static class DubSegmentGraphBuilder
         // 5) 音频 → [aout]
         if (keepOriginalAudio)
         {
-            var aStart = startFrame / fps;
-            var aEnd = endFrame / fps;
-            parts.Add($"[0:a]atrim=start={F(aStart)}:end={F(aEnd)},asetpts=PTS-STARTPTS,aresample=44100[aout]");
+            if (vocalsInputIndex is { } vi)
+            {
+                // BGM 替换模式（issue #22）：不用原混音轨，改用整轨 vocals.wav 按
+                // [vocalsStart, vocalsEnd]（原视频时间轴，秒）切片 —— 去原 BGM 只留口播。
+                parts.Add(
+                    $"[{vi}:a]atrim=start={F(vocalsStart)}:end={F(vocalsEnd)}," +
+                    "asetpts=PTS-STARTPTS,aresample=44100[aout]");
+            }
+            else
+            {
+                var aStart = startFrame / fps;
+                var aEnd = endFrame / fps;
+                parts.Add($"[0:a]atrim=start={F(aStart)}:end={F(aEnd)},asetpts=PTS-STARTPTS,aresample=44100[aout]");
+            }
         }
         else
         {

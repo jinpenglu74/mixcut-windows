@@ -7,6 +7,9 @@ public enum NavigationItem
     ImportMedia,
     SegmentLibrary,
     Schemes,
+    // issue #22：BGM 库放在「混剪方案」和「导出」之间（对齐 mac，⌘6 → Ctrl+6 但按枚举序=Ctrl+5 后一位）。
+    // 注意插入会使 Export 的序号 +1，AppSettings.LastNavItem 存的旧序号会错位一次，无实害。
+    BgmLibrary,
     Export,
 }
 
@@ -18,6 +21,7 @@ public static class NavigationItemExtensions
         NavigationItem.ImportMedia => "素材导入",
         NavigationItem.SegmentLibrary => "分镜素材库",
         NavigationItem.Schemes => "混剪方案",
+        NavigationItem.BgmLibrary => "BGM 库",
         NavigationItem.Export => "导出",
         _ => item.ToString(),
     };
@@ -29,6 +33,7 @@ public static class NavigationItemExtensions
         NavigationItem.ImportMedia => "⬇", // square.and.arrow.down
         NavigationItem.SegmentLibrary => "🎞", // film.stack
         NavigationItem.Schemes => "📋", // list.bullet.clipboard
+        NavigationItem.BgmLibrary => "🎵", // music.note.list
         NavigationItem.Export => "⬆", // square.and.arrow.up
         _ => string.Empty,
     };

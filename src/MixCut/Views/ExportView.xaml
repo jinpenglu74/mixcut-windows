@@ -102,9 +102,41 @@
                        Margin="0,0,0,4" />
             <!-- 硬件加速状态：显示选中的硬件编码器（NVIDIA / Intel / AMD / MF / 无） -->
             <TextBlock x:Name="HardwareStatusText" FontSize="10" Foreground="#2E8B57"
-                       Margin="0,0,0,18" />
+                       Margin="0,0,0,12" />
 
-            <Border Height="1" Background="#EEE" Margin="0,0,0,16" />
+            <!-- 背景音乐（issue #22）：默认「保留原 BGM」= 现有导出行为逐字节不变 -->
+            <Grid Margin="0,0,0,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,6,0">
+                    <TextBlock Text="背景音乐" FontSize="11" Foreground="#666" Margin="0,0,0,4" />
+                    <ComboBox x:Name="BgmCombo" Padding="6,4" SelectionChanged="OnBgmChanged" />
+                </StackPanel>
+                <StackPanel Grid.Column="1" Grid.ColumnSpan="2" Margin="6,0,0,0"
+                            x:Name="BgmVolumePanel" Visibility="Collapsed">
+                    <TextBlock Text="BGM 音量" FontSize="11" Foreground="#666" Margin="0,0,0,4" />
+                    <Grid VerticalAlignment="Center" Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Slider x:Name="BgmVolumeSlider" Minimum="10" Maximum="100"
+                                Value="60" IsSnapToTickEnabled="True" TickFrequency="5"
+                                ValueChanged="OnBgmVolumeChanged" VerticalAlignment="Center" />
+                        <TextBlock x:Name="BgmVolumeLabel" Grid.Column="1" Text="60%" FontSize="11"
+                                   Foreground="#666" Margin="10,0,0,0" VerticalAlignment="Center"
+                                   MinWidth="34" />
+                    </Grid>
+                </StackPanel>
+            </Grid>
+            <!-- 选中 BGM 后的说明 / 库为空时的引导（二选一显示） -->
+            <TextBlock x:Name="BgmHintText" FontSize="10" Foreground="#888" TextWrapping="Wrap"
+                       Visibility="Collapsed" Margin="0,0,0,4" />
+
+            <Border Height="1" Background="#EEE" Margin="0,12,0,16" />
 
             <!-- 批量导出（v0.3.0 对齐：可选子集）—— 已涵盖单方案场景（选 1 个等同于原「单方案导出」），单方案区块在 v0.6.0 移除 -->
             <TextBlock Text="批量导出全部方案" FontSize="12" FontWeight="SemiBold"

@@ -38,6 +38,12 @@ public static class AppPaths
     /// <summary>对齐后的配音音频（m4a）目录：<c>&lt;Root&gt;\Dubs</c>。</summary>
     public static string DubAudioDirectory { get; } = CreateDir(Path.Combine(Root, "Dubs"));
 
+    /// <summary>
+    /// 全局 BGM 库目录（issue #22，对齐 mac BGMLibraryStore）：<c>&lt;Root&gt;\BGM</c>。
+    /// 纯文件目录即库（不动数据库 schema）：列表 = 目录扫描，显示名 = 文件名，所有项目共享。
+    /// </summary>
+    public static string BgmDirectory { get; } = CreateDir(Path.Combine(Root, "BGM"));
+
     /// <summary>SQLite 数据库文件路径：<c>&lt;Root&gt;\mixcut.db</c>。</summary>
     public static string DatabaseFile { get; } = Path.Combine(Root, "mixcut.db");
 

@@ -52,6 +52,22 @@ public sealed class DubExportService
             onProgress?.Invoke(new ExportProgress(ExportPhase.Concatenating, 0.9, "拼接成片…"));
             await ConcatCopyAsync(intermediates, workDir, outputPath, ct);
 
+            // BGM 模式（issue #22）：拼好后整片铺所选 BGM。失败必须连带删掉已拼好的成片 ——
+            // 绝不留一条「BGM 没换上」的片子混进成品（§红线：兜底只兜过程不兜结果）。
+            if (config.BgmPath is { } bgm)
+            {
+                onProgress?.Invoke(new ExportProgress(ExportPhase.Encoding, 0.96, "正在铺背景音乐…"));
+                try
+                {
+                    await Bgm.BgmApplier.ApplyAsync(_ffmpeg, outputPath, bgm, config.BgmVolume, ct);
+                }
+                catch
+                {
+                    try { if (File.Exists(outputPath)) File.Delete(outputPath); } catch { /* 尽力 */ }
+                    throw;
+                }
+            }
+
             onProgress?.Invoke(new ExportProgress(ExportPhase.Completed, 1.0, "配音导出完成"));
         }
         finally
@@ -133,10 +149,29 @@ public sealed class DubExportService
             }
         }
 
+        // BGM 替换模式（issue #22）：原声段改用整轨 vocals.wav 切片。缺产物必须让该条成片失败
+        // （§红线：禁止静默回退原混音轨 —— 那等于给用户一条 BGM 没去掉的片子）。
+        int? vocalsInputIndex = null;
+        if (keepOriginalAudio && spec.Vocals is { } vs)
+        {
+            var vocalsPath = string.IsNullOrEmpty(vs.SourceVideoHash)
+                ? null
+                : Path.Combine(AppPaths.StemsDirectory(vs.SourceVideoHash), "vocals.wav");
+            if (vocalsPath is null || !File.Exists(vocalsPath))
+            {
+                throw new DubException(
+                    $"人声分离产物缺失（{Path.GetFileName(vs.SourceVideoPath)}），无法去除原 BGM。" +
+                    "请重新导出（会自动重新分离）");
+            }
+            extraInputs.Add(vocalsPath);
+            vocalsInputIndex = extraInputs.Count;
+        }
+
         var graph = DubSegmentGraphBuilder.Build(
             mode, spec.StartFrame, spec.EndFrame, spec.Fps, outW, outH, maskPixel,
             captions, keepOriginalAudio, dubAudioInputIndex,
-            spec.FreezePadFrames, spec.TrailingSilence, bgmInputIndex);
+            spec.FreezePadFrames, spec.TrailingSilence, bgmInputIndex,
+            vocalsInputIndex, spec.Vocals?.Start ?? 0, spec.Vocals?.End ?? 0);
 
         var encoder = HardwareEncoderProbe.H264Hardware ?? "libx264";
         var bitrate = config.Quality.VideoBitrateKbps(ExportCodec.H264Hardware);

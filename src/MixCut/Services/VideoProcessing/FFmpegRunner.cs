@@ -9,8 +9,16 @@ using MixCut.Utilities;
 
 namespace MixCut.Services.VideoProcessing;
 
+/// <summary>
+/// 片段音频来源覆写（issue #22 BGM 替换模式）：视频画面仍取 <see cref="FrameClip.Path"/>，
+/// 音频改从 <paramref name="Path"/>（整轨 vocals.wav）按 [<paramref name="StartSeconds"/>,
+/// <paramref name="EndSeconds"/>]（<b>原视频时间轴</b>，秒）切片 —— 含「就地画面替换」的分镜也用
+/// 原视频时间轴切（替换片音轨本就取自原视频同一时间窗，与整轨分离产物天然对齐）。
+/// </summary>
+public sealed record AudioOverride(string Path, double StartSeconds, double EndSeconds);
+
 /// <summary>以帧为真值的视频片段。StartFrame inclusive，EndFrame exclusive。</summary>
-public sealed record FrameClip(string Path, int StartFrame, int EndFrame, double Fps)
+public sealed record FrameClip(string Path, int StartFrame, int EndFrame, double Fps, AudioOverride? Audio = null)
 {
     public int FrameCount => Math.Max(0, EndFrame - StartFrame);
     public double StartSeconds => FrameTime.FrameToSeconds(StartFrame, Fps);
@@ -24,6 +32,28 @@ public sealed record FrameClip(string Path, int StartFrame, int EndFrame, double
 /// </summary>
 public sealed class FFmpegRunner
 {
+    /// <summary>
+    /// loudnorm 后置的音频消毒链（v0.14.1 修 13 连败导出事故）：
+    /// loudnorm 遇「纯数字静音」音轨（无声片头/AI 生成素材常见）会算出 NaN 采样，
+    /// AAC 编码器拒收 → 整条导出 exit -22「Input contains (near) NaN/+-Inf」，且与编码器无关
+    /// （NVENC / libx264 都挂，用户换 CPU 编码也救不回）。
+    /// 结构是「aformat → aeval → aformat」三明治：
+    ///   前 aformat 锁 44100Hz/fltp/stereo（loudnorm 内部会把采样率抬到 192kHz，不锁回去
+    ///   成品音轨会是 96kHz；单声道源在此升立体声，保证 aeval 两通道表达式有输入）；
+    ///   aeval 逐采样把 NaN/Inf 清成 0（静音进静音出 —— 不能用转 s16 清洗，NaN→s16 是满幅
+    ///   噪声）、有限值夹到 ±4 防异常尖峰（loudnorm TP=-1.5dB 后 |x|≤0.84，正常音频永不触发）；
+    ///   后 aformat 必须有 —— aeval 的输出采样格式 AAC 编码器直接消费会
+    ///   「Error while opening encoder」（实测），须收尾归一。
+    /// 三种输入（纯静音 / 立体声有声 / 单声道有声）均已实测通过且无劣化。
+    /// </summary>
+    public const string LoudnormSanitize =
+        "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo," +
+        "aeval=exprs=" +
+        "if(isnan(val(0))+isinf(val(0))\\,0\\,min(max(val(0)\\,-4)\\,4))|" +
+        "if(isnan(val(1))+isinf(val(1))\\,0\\,min(max(val(1)\\,-4)\\,4))" +
+        ":channel_layout=stereo," +
+        "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo";
+
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(3);
     private readonly ILogger<FFmpegRunner> _logger;
 
@@ -85,9 +115,14 @@ public sealed class FFmpegRunner
         return stdout;
     }
 
-    /// <summary>执行 FFmpeg 命令并返回 stderr（用于元数据、场景检测等）。</summary>
+    /// <summary>
+    /// 执行 FFmpeg 命令并返回 stderr（用于元数据、场景检测等）。
+    /// <paramref name="timeout"/> null = 默认 3 分钟 —— 全片解码类调用（场景/静音检测）必须按时长
+    /// 传入动态值：弱机上 96s 视频解码就超 3 分钟，默认值会把干得好好的检测冤杀（2026-07-24 实测）。
+    /// </summary>
     public async Task<string> RunForStderrAsync(
-        IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
+        IReadOnlyList<string> arguments, CancellationToken cancellationToken = default,
+        TimeSpan? timeout = null)
     {
         if (!BundledBinaries.FfmpegAvailable)
         {
@@ -96,7 +131,7 @@ public sealed class FFmpegRunner
 
         var (_, _, stderr) = await ExecuteAsync(
             BundledBinaries.Ffmpeg, arguments, captureStdout: false,
-            stderrHandler: null, DefaultTimeout, cancellationToken);
+            stderrHandler: null, timeout ?? DefaultTimeout, cancellationToken);
         return stderr;
     }
 
@@ -573,11 +608,13 @@ public sealed class FFmpegRunner
             return;
         }
 
-        // 并行探测每个输入是否有音频轨道。
+        // 并行探测每个输入是否有音频轨道。音频覆写段（BGM 模式的 vocals 切片）无需探测 ——
+        // 覆写源是我们自己产的 wav，恒有音轨；其存在性由 ExportService 预检保证。
         var hasAudio = new bool[segments.Count];
         await Task.WhenAll(Enumerable.Range(0, segments.Count).Select(async i =>
         {
-            hasAudio[i] = await ProbeHasAudioAsync(segments[i].Path, cancellationToken);
+            hasAudio[i] = segments[i].Audio is not null
+                || await ProbeHasAudioAsync(segments[i].Path, cancellationToken);
         }));
 
         var args = new List<string>();
@@ -595,8 +632,19 @@ public sealed class FFmpegRunner
             args.AddRange(new[] { "-i", seg.Path });
         }
 
-        // 沉默音频生成器（索引 = segments.Count），替代无音轨片段。
-        var silenceIndex = segments.Count;
+        // 音频覆写源（vocals.wav 等）追加为独立输入，按路径去重 —— 同一视频的多个分镜共用一个输入。
+        var audioOverrideIndex = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var seg in segments)
+        {
+            if (seg.Audio is { } ov && !audioOverrideIndex.ContainsKey(ov.Path))
+            {
+                audioOverrideIndex[ov.Path] = segments.Count + audioOverrideIndex.Count;
+                args.AddRange(new[] { "-i", ov.Path });
+            }
+        }
+
+        // 沉默音频生成器（最后一个输入），替代无音轨片段。
+        var silenceIndex = segments.Count + audioOverrideIndex.Count;
         args.AddRange(new[] { "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo" });
 
         var targetScale = resolution ?? "1080:1920";
@@ -619,11 +667,23 @@ public sealed class FFmpegRunner
             var startStr = segments[i].StartSeconds.ToString("F9", CultureInfo.InvariantCulture);
             var endStr = segments[i].EndSeconds.ToString("F9", CultureInfo.InvariantCulture);
             var durStr = segments[i].Duration.ToString("F9", CultureInfo.InvariantCulture);
-            if (hasAudio[i])
+            if (segments[i].Audio is { } ov)
+            {
+                // BGM 模式：音频改从整轨 vocals.wav 按原视频时间轴切片。末尾补一段
+                // apad(补短)+atrim(裁长) 把音频长度钉死为画面时长 —— vocals 窗口（DB 秒）与
+                // 画面帧窗可能差极小量，多分镜拼接不钉死会累积 A/V 漂移。
+                var oStart = ov.StartSeconds.ToString("F9", CultureInfo.InvariantCulture);
+                var oEnd = ov.EndSeconds.ToString("F9", CultureInfo.InvariantCulture);
+                filterParts.Add(
+                    $"[{audioOverrideIndex[ov.Path]}:a]atrim=start={oStart}:end={oEnd},asetpts=PTS-STARTPTS," +
+                    $"aresample=44100,loudnorm=I=-16:TP=-1.5:LRA=11,{LoudnormSanitize}," +
+                    $"apad=whole_dur={durStr},atrim=0:{durStr},asetpts=PTS-STARTPTS[a{i}]");
+            }
+            else if (hasAudio[i])
             {
                 filterParts.Add(
                     $"[{i}:a]atrim=start={startStr}:end={endStr},asetpts=PTS-STARTPTS," +
-                    $"aresample=44100,loudnorm=I=-16:TP=-1.5:LRA=11,apad=whole_dur={durStr}[a{i}]");
+                    $"aresample=44100,loudnorm=I=-16:TP=-1.5:LRA=11,{LoudnormSanitize},apad=whole_dur={durStr}[a{i}]");
             }
             else
             {

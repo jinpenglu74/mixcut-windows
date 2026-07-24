@@ -87,6 +87,9 @@ public partial class App : Application
         services.AddSingleton<Services.Dubbing.ParaformerAsrClient>();
         services.AddSingleton<Services.Dubbing.SegmentReRecognizer>();
 
+        // #22 全局 BGM 库 + 导出替换背景音乐（单例）。
+        services.AddSingleton<Services.Bgm.BgmLibraryService>();
+
         // #12 分镜头 AI 画面替换：切分 / AI 变体 / 合成（单例）。
         services.AddSingleton<Services.ShotEdit.ShotSlicerService>();
         services.AddSingleton<Services.ShotEdit.WanVideoEditClient>();

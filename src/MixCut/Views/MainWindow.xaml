@@ -17,12 +17,13 @@
         <!-- 项目操作 -->
         <KeyBinding Key="N" Modifiers="Control" Command="{x:Static ApplicationCommands.New}" />
         <KeyBinding Key="OemComma" Modifiers="Control" Command="{x:Static ApplicationCommands.Properties}" />
-        <!-- 导航：Ctrl+1~5 切换 5 个工作区 -->
+        <!-- 导航：Ctrl+1~6 切换 6 个工作区（#22 新增 BGM 库） -->
         <KeyBinding Key="D1" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
         <KeyBinding Key="D2" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
         <KeyBinding Key="D3" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
         <KeyBinding Key="D4" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
         <KeyBinding Key="D5" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
+        <KeyBinding Key="D6" Modifiers="Control" Command="{x:Static ApplicationCommands.NotACommand}" />
         <!-- 快捷键帮助 Ctrl+/ -->
         <KeyBinding Key="OemQuestion" Modifiers="Control" Command="{x:Static ApplicationCommands.Help}" />
     </Window.InputBindings>

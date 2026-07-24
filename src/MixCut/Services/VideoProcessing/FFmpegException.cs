@@ -21,6 +21,11 @@ public enum FFmpegFailureClass
     Oom,
     EncoderCrash,
     Timeout,
+    /// <summary>
+    /// 音频采样数据非法（NaN/Inf）：loudnorm 遇纯静音素材的历史 bug（v0.14.1 已在滤镜链消毒），
+    /// 或素材音轨本身损坏。与编码器/分辨率无关 —— 换 CPU / 降 1080p 都救不回，重试也无意义。
+    /// </summary>
+    InvalidAudioData,
     Other,
 }
 
@@ -70,6 +75,14 @@ public sealed class FFmpegException : Exception
         var text = (ex.RawStderr + "\n" + (ex.Message ?? string.Empty));
 
         bool Has(string s) => text.IndexOf(s, StringComparison.OrdinalIgnoreCase) >= 0;
+
+        // 音频数据非法（2026-07-23 RTX 4060 Ti 用户 13 连败事故指纹）：AAC 编码器拒收 NaN/Inf 采样。
+        // 必须排在 Oom 之前 —— 这类失败的 stderr 可能同时带「Error sending frames to consumers」，
+        // 放后面会被误判成内存不足、走无意义的降分辨率重试。
+        if (Has("contains (near) NaN"))
+        {
+            return FFmpegFailureClass.InvalidAudioData;
+        }
 
         // 内存不足：ENOMEM(-12) 或滤镜阶段分配失败的两条指纹。
         if (ex.ExitCode == -12 || Has("Cannot allocate memory") || Has("Error sending frames to consumers"))

@@ -292,6 +292,23 @@ public sealed class AppSettings
         set => Set("last_export_quality", Math.Max(0, value).ToString());
     }
 
+    /// <summary>
+    /// 导出页选中的全局 BGM 文件路径（issue #22）。空 = 「保留原 BGM」（默认，现有导出行为不变）。
+    /// 全局状态：切换项目不重置（有意为之）；文件是否仍存在由 ExportView 每次进页/导出前校验。
+    /// </summary>
+    public string SelectedBgmPath
+    {
+        get => Get("selected_bgm_path") ?? string.Empty;
+        set => Set("selected_bgm_path", string.IsNullOrEmpty(value) ? null : value);
+    }
+
+    /// <summary>BGM 音量百分比（10–100，默认 60，避免压过口播）。issue #22。</summary>
+    public int BgmVolumePercent
+    {
+        get => int.TryParse(Get("bgm_volume_percent"), out var i) ? Math.Clamp(i, 10, 100) : 60;
+        set => Set("bgm_volume_percent", Math.Clamp(value, 10, 100).ToString());
+    }
+
     /// <summary>主窗口上次宽度（记忆用户调整；&lt;960 视为无效回默认）。</summary>
     public double WindowWidth
     {

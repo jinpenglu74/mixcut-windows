@@ -687,7 +687,12 @@ public partial class SegmentLibraryViewV2 : UserControl, IProjectView
                 or System.Windows.Controls.Primitives.ScrollBar
                 or SegmentLibrary.SubtitleMaskOverlay)
                 return true;
-            child = System.Windows.Media.VisualTreeHelper.GetParent(child);
+            // 点击卡片台词文字时 OriginalSource 是 Run（ContentElement，不是 Visual），
+            // 直接喂 VisualTreeHelper.GetParent 会抛 InvalidOperationException（用户日志 2026-07-22 FTL）。
+            // ContentElement 先走逻辑树爬回宿主 Visual（Run → TextBlock），再继续视觉树。
+            child = child is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D
+                ? System.Windows.Media.VisualTreeHelper.GetParent(child)
+                : LogicalTreeHelper.GetParent(child);
         }
         return false;
     }

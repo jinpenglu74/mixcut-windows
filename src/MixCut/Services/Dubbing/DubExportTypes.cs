@@ -28,13 +28,22 @@ public readonly record struct PixelRect(int X, int Y, int Width, int Height)
     }
 }
 
+/// <summary>
+/// 原声段的 vocals 切片来源（issue #22 BGM 替换模式，对应 mac DubSegmentGraph.VocalsSource）：
+/// 音频改用 <paramref name="SourceVideoHash"/> 对应的整轨 vocals.wav 按
+/// [<paramref name="Start"/>, <paramref name="End"/>]（<b>原视频时间轴</b>，秒）切片。
+/// <paramref name="SourceVideoPath"/> 保留原视频路径供「重试时重新分离」定位（画面替换分镜的
+/// spec.VideoPath 是替换合成片，不能拿去分离）。
+/// </summary>
+public sealed record VocalsSlice(string SourceVideoPath, string SourceVideoHash, double Start, double End);
+
 /// <summary>单分镜导出规格（值类型）。对应 mac DubSegmentSpec。</summary>
 /// <remarks>#15：<see cref="CaptionLines"/> = 逐句字幕（相对分镜起点秒）；空 = 不烧字幕。</remarks>
 public sealed record DubSegmentSpec(
     string VideoPath, int StartFrame, int EndFrame, double Fps,
     IReadOnlyList<CaptionLine> CaptionLines, bool HasHardSubtitle, string MaskStyleRaw, SubtitleMaskRect MaskRect,
     bool IsVoiceLocked, string? DubAudioPath, int FreezePadFrames, double TrailingSilence,
-    string? BgmAudioPath);
+    string? BgmAudioPath, VocalsSlice? Vocals = null);
 
 /// <summary>配音导出输入（整条成片）。对应 mac DubExportInput。</summary>
 public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int MaxWidth, int MaxHeight)
@@ -43,8 +52,12 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
     /// 从某方案 + 一个组合(每槽选定 dubId，null=原声) 解析导出输入。combo=null 时退回
     /// 按 <see cref="SchemeSegment.SelectedSegmentDubId"/> 取定。锁定/找不到/无音频 → 原声回退。
     /// 配音段自动混入 demucs 分离出的 BGM。对应 mac DubExportInput.from。
+    /// <paramref name="useVocalsAudio"/>（issue #22 BGM 替换模式）：原声/锁定/回退段改用整轨
+    /// vocals.wav 切片（去原 BGM 只留口播）；配音段<b>不再混入</b>分离出的 bgm.wav —— 整片 BGM
+    /// 由导出末步统一铺（<see cref="Bgm.BgmApplier"/>）。
     /// </summary>
-    public static DubExportInput? From(MixScheme scheme, IReadOnlyList<Guid?>? combo = null)
+    public static DubExportInput? From(
+        MixScheme scheme, IReadOnlyList<Guid?>? combo = null, bool useVocalsAudio = false)
     {
         var ordered = scheme.OrderedSegments;
         if (ordered.Count == 0) return null;
@@ -75,13 +88,19 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
             var chosenId = combo is not null ? (idx < combo.Count ? combo[idx] : null) : schemeSeg.SelectedSegmentDubId;
             var chosen = chosenId is { } id ? segment.EffectiveDubVariants.FirstOrDefault(d => d.Id == id) : null;
 
+            // BGM 替换模式下原声/锁定/回退段的 vocals 切片来源（按原视频时间轴，画面替换分镜也一样）。
+            var vocals = useVocalsAudio
+                ? new VocalsSlice(video.LocalPath, video.ContentHash ?? string.Empty,
+                    segment.StartTime, segment.EndTime)
+                : null;
+
             if (segment.IsVoiceLocked || chosen is null)
             {
                 // 锁定/无选定 → 保留原声原字幕（不烧新字幕，hasHardSubtitle:false 防遮到要保留的原字幕）
                 specs.Add(new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     System.Array.Empty<CaptionLine>(), false, segment.MaskStyleRaw, segment.MaskRect,
-                    IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
+                    IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null, Vocals: vocals));
             }
             else if (!string.IsNullOrEmpty(chosen.AudioFilePath) && File.Exists(chosen.AudioFilePath))
             {
@@ -98,7 +117,9 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     capLines, segment.HasHardSubtitle, segment.MaskStyleRaw, segment.MaskRect,
                     IsVoiceLocked: false, DubAudioPath: chosen.AudioFilePath,
-                    chosen.FreezePadFrames, chosen.TrailingSilence, BgmPath(video)));
+                    chosen.FreezePadFrames, chosen.TrailingSilence,
+                    // BGM 模式：配音段不混原视频分离出的 bgm.wav（整片 BGM 最后统一铺）
+                    useVocalsAudio ? null : BgmPath(video)));
             }
             else
             {
@@ -106,7 +127,7 @@ public sealed record DubExportInput(IReadOnlyList<DubSegmentSpec> Segments, int 
                 specs.Add(new DubSegmentSpec(
                     ep.VideoPath, ep.StartFrame, ep.EndFrame, fps,
                     System.Array.Empty<CaptionLine>(), false, segment.MaskStyleRaw, segment.MaskRect,
-                    IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null));
+                    IsVoiceLocked: true, DubAudioPath: null, 0, 0, BgmAudioPath: null, Vocals: vocals));
             }
         }
 

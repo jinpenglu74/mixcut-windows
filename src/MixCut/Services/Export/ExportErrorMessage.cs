@@ -19,6 +19,13 @@ public static class ExportErrorMessage
             return binEx.Message;
         }
 
+        // ExportException / DubException 的 message 本就是面向用户的中文（如「人声分离产物缺失…」
+        // 「所选背景音乐文件已不存在…」），直接透传 —— 落到最后的 generic 分支会把有用信息抹掉。
+        if (ex is ExportException or Dubbing.DubException)
+        {
+            return ex.Message;
+        }
+
         if (ex is FFmpegException ffEx)
         {
             return FFmpegException.Classify(ffEx) switch
@@ -33,6 +40,9 @@ public static class ExportErrorMessage
                 FFmpegFailureClass.EncoderCrash =>
                     "显卡编码器异常：已尝试用 CPU 重新编码仍失败，" +
                     "建议更新显卡驱动或在导出设置里改用「H.264（CPU 软件编码）」",
+                FFmpegFailureClass.InvalidAudioData =>
+                    "个别素材的声音数据异常（常见于无声画面素材），与显卡/编码设置无关。" +
+                    "请先更新到最新版本重试；若仍失败，把方案里无声的片头/片尾素材移除后再导出",
                 _ =>
                     "导出失败，请重试；若反复失败请在设置里改用 1080p 与 CPU 编码",
             };

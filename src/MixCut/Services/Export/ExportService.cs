@@ -25,8 +25,14 @@ public sealed record ExportInput(
     int MaxHeight,
     int SkippedCount = 0)
 {
-    /// <summary>从 MixScheme 提取导出数据；无有效分镜时返回 null。</summary>
-    public static ExportInput? FromScheme(MixScheme scheme)
+    /// <summary>
+    /// 从 MixScheme 提取导出数据；无有效分镜时返回 null。
+    /// <paramref name="useVocalsAudio"/>（issue #22 BGM 替换模式）：每个分镜的音频改从该视频整轨
+    /// 人声分离产物 vocals.wav 按 [Segment.StartTime, Segment.EndTime]（原视频时间轴）切片 ——
+    /// 含画面替换的分镜同样用原视频时间轴（见 <see cref="AudioOverride"/> 注释）。
+    /// vocals 文件是否存在由 ExportView 预检 + <see cref="ExportService"/> 渲染前校验把关。
+    /// </summary>
+    public static ExportInput? FromScheme(MixScheme scheme, bool useVocalsAudio = false)
     {
         var ordered = scheme.OrderedSegments;
         if (ordered.Count == 0)
@@ -54,8 +60,15 @@ public sealed record ExportInput(
                 skipped++; // 源/替换文件丢失的分镜：统计后由调用方告知用户，不静默少导出
                 continue;
             }
+            AudioOverride? audio = null;
+            if (useVocalsAudio && !string.IsNullOrEmpty(video.ContentHash))
+            {
+                var vocals = Path.Combine(
+                    Utilities.AppPaths.StemsDirectory(video.ContentHash), "vocals.wav");
+                audio = new AudioOverride(vocals, segment.StartTime, segment.EndTime);
+            }
             segments.Add(new FrameClip(
-                ep.VideoPath, ep.StartFrame, ep.EndFrame, ep.Fps > 0 ? ep.Fps : 30));
+                ep.VideoPath, ep.StartFrame, ep.EndFrame, ep.Fps > 0 ? ep.Fps : 30, audio));
             maxWidth = Math.Max(maxWidth, video.Width);
             maxHeight = Math.Max(maxHeight, video.Height);
         }
@@ -138,6 +151,22 @@ public sealed class ExportService
         CancellationToken cancellationToken)
     {
         config ??= new ExportConfig();
+
+        // BGM 模式（issue #22）：渲染前校验各分镜的 vocals 切片源还在（预检后可能被外部删掉）。
+        // §红线「兜底只兜过程不兜结果」：缺了绝不回退原混音轨（那等于给用户一条 BGM 没去掉的片子），
+        // 直接让该条成片失败并给出可自救的人话。
+        if (config.BgmPath is not null)
+        {
+            foreach (var seg in input.Segments)
+            {
+                if (seg.Audio is { } ov && !File.Exists(ov.Path))
+                {
+                    throw new ExportException(
+                        $"人声分离产物缺失（{Path.GetFileName(seg.Path)}），无法去除原 BGM。" +
+                        "请重新导出（会自动重新分离）");
+                }
+            }
+        }
 
         var resolution = ResolveResolution(config.Resolution, input.MaxWidth, input.MaxHeight);
 
@@ -228,7 +257,8 @@ public sealed class ExportService
             _logger.LogInformation("[ExportFallback] CPU 降级编码成功: {Output}", outputPath);
         }
         catch (VideoProcessing.FFmpegException ffEx)
-            when (decodeHw != null)
+            when (decodeHw != null
+                 && VideoProcessing.FFmpegException.Classify(ffEx) != VideoProcessing.FFmpegFailureClass.InvalidAudioData)
         {
             // 硬件解码超时/失败（卡死、HW frames 初始化失败、某些 4K HEVC 不被 GPU 接受等）
             // → 关掉硬解、纯软解重试一次（编码器保持不变）。守住「装上即跑」：硬解只为提速，失败绝不让用户导不出。
@@ -248,6 +278,16 @@ public sealed class ExportService
             _logger.LogInformation("[ExportDecodeFallback] 软解重试成功: {Output}", outputPath);
         }
         // Timeout / Other（且无硬解可关）：不盲目重试，原样抛出，由上层 ExportErrorMessage 翻译成人话。
+
+        // BGM 模式（issue #22）：拼接完成后独立一步给成片铺所选 BGM（视频流 -c copy 直拷，只改音频）。
+        // 失败会向上抛 → ExportAsync 外层删掉半成品，绝不留一条「BGM 没换上」的成片给用户。
+        if (config.BgmPath is { } bgmPath)
+        {
+            onProgress?.Invoke(new ExportProgress(ExportPhase.Encoding, 0.97, "正在铺背景音乐…"));
+            await Bgm.BgmApplier.ApplyAsync(_ffmpeg, outputPath, bgmPath, config.BgmVolume, cancellationToken);
+            _logger.LogInformation("[BgmDiag] 成片已铺 BGM: {Bgm} vol={Vol:F2}",
+                Path.GetFileName(bgmPath), config.BgmVolume);
+        }
 
         onProgress?.Invoke(new ExportProgress(ExportPhase.Completed, 1.0, "导出完成"));
         _logger.LogInformation("导出完成: {Output}", outputPath);

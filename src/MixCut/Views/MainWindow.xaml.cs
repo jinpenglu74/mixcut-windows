@@ -208,7 +208,14 @@ public partial class MainWindow : Window
                 ? new SegmentLibraryViewV2(_vm.SegmentVM, _variantExportService, _settings, _services, NavigateTo)
                 : (FrameworkElement)new SegmentLibraryView(_vm.SegmentVM, _variantExportService, _settings),
             NavigationItem.Schemes => new SchemesView(_vm.SchemeVM, _vm.SegmentVM),
-            NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings, NavigateTo),
+            // #22：BGM 库是全局视图（不依赖项目数据），不实现 IProjectView。
+            NavigationItem.BgmLibrary => new BgmLibraryView(
+                (Services.Bgm.BgmLibraryService)_services.GetService(typeof(Services.Bgm.BgmLibraryService))!,
+                (Services.VideoProcessing.FFmpegRunner)_services.GetService(typeof(Services.VideoProcessing.FFmpegRunner))!),
+            NavigationItem.Export => new ExportView(_vm.SchemeVM, _exportService, _dubExport, _settings,
+                (Services.Dubbing.VocalSeparationService)_services.GetService(typeof(Services.Dubbing.VocalSeparationService))!,
+                (Services.Bgm.BgmLibraryService)_services.GetService(typeof(Services.Bgm.BgmLibraryService))!,
+                NavigateTo),
             _ => new ProjectOverviewView(_vm, NavigateTo, RefreshAfterProjectChange),
         };
         _views[item] = view;
@@ -490,6 +497,7 @@ public partial class MainWindow : Window
                 System.Windows.Input.Key.D3 => 2,
                 System.Windows.Input.Key.D4 => 3,
                 System.Windows.Input.Key.D5 => 4,
+                System.Windows.Input.Key.D6 => 5,
                 _ => -1,
             };
             if (idx >= 0 && idx < NavigationItemExtensions.All.Count)

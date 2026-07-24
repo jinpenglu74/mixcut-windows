@@ -146,6 +146,15 @@ public sealed class ExportConfig
     public ExportQuality Quality { get; set; } = ExportQuality.High;
 
     /// <summary>
+    /// 选中的全局 BGM 文件路径（issue #22）。null = 「保留原 BGM」——现有导出行为一个字都不改。
+    /// 非 null 时成片去掉各分镜原 BGM 只留口播，再把该 BGM 铺满全片（长截断/短循环/结尾 1s 淡出）。
+    /// </summary>
+    public string? BgmPath { get; set; }
+
+    /// <summary>BGM 相对音量 0.10–1.00，默认 0.60（避免压过口播）。仅 <see cref="BgmPath"/> 非空时生效。</summary>
+    public double BgmVolume { get; set; } = 0.60;
+
+    /// <summary>
     /// 用户可读的质量说明（含码率/CRF + 30 秒文件大小估算），在 UI 下方显示。
     /// 对齐 macOS 版 ExportConfig.qualityHint。
     /// </summary>
