@@ -1,10 +1,10 @@
-; MixCut Windows Inno Setup script (v0.4.0+)
+﻿; MixCut Windows Inno Setup script (v0.4.0+)
 ; 用法（在 Windows 构建机）：
 ;   "C:\Users\mlamp\AppData\Local\Programs\Inno Setup 6\iscc.exe" installer\MixCut.iss
 ; 输出：installer\out\MixCut-Setup-vX.Y.Z-win-x64.exe
 
 #define MyAppName "MixCut"
-#define MyAppVersion "0.14.0"
+#define MyAppVersion "0.15.0"
 #define MyAppPublisher "MixCut"
 #define MyAppURL "https://github.com/RoshanGH/mixcut-windows"
 #define MyAppExeName "MixCut.exe"
