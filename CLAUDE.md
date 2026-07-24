@@ -192,6 +192,31 @@ scripts\win-build.ps1 -Publish
 脚本卡死时的逃生阀（直接前台调 dotnet + 清整个 obj/bin）见记忆 `wpf-build-hang-fix`。
 纯语法/类型检查可直接 `dotnet build src\MixCut\MixCut.csproj -c Debug`（本机是 Windows，无需旧 Mac 交叉编译的 `-p:EnableWindowsTargeting=true` 开关）。
 
+### 构建定时检查铁律（每 1 分钟必查，绝不傻等超时 ⚠️⚠️⚠️）
+
+**任何 dotnet build / publish 一律后台启动 + 每 60 秒检查一次进度；发现卡死立即杀掉重来，严禁挂着几分钟超时干等。**
+（2026-07-24 用户暴怒沉淀：构建卡死时我连续两次傻等 240~300 秒超时，浪费几十分钟。）
+
+标准流程：
+
+```powershell
+# 1) 后台启动，输出重定向到文件
+$log = "$env:TEMP\mixcut-build.log"
+$p = Start-Process C:\Users\mlamp\dotnet\dotnet.exe -ArgumentList 'build','D:\Dev\mixcut-windows\src\MixCut\MixCut.csproj','-c','Debug','-nodeReuse:false','-p:UseSharedCompilation=false','-v:m' -RedirectStandardOutput $log -NoNewWindow -PassThru
+# 2) 每 60 秒查一次：进程退出→看结果；没退出→对比 CPU 时间增量
+#    60 秒内 CPU 增量 < 2 秒 ≈ MarkupCompile 卡死 → Stop-Process + 清 obj → 重跑
+```
+
+判卡标准（满足即杀，不要犹豫）：
+- 进程 60 秒内 CPU 时间几乎不涨（增量 < 2 秒），或
+- 输出日志文件 60 秒内大小无变化且已过 Restore 阶段
+
+卡死处理：`Stop-Process` 全部 dotnet 构建进程 → `Remove-Item -Recurse -Force src\MixCut\obj` → 重跑（正常一次构建 20~60 秒就该完）。连续两次卡死 → 连 bin 一起清。
+
+反模式（绝对禁止）：
+- ❌ 给构建命令挂 240s/300s 超时然后干等它到点
+- ❌ 卡死后不清 obj 直接原样重跑（大概率复卡）
+
 ### 运行 + 自验证
 
 改完 → 构建 → **确认 publish\MixCut.exe（或 bin\Debug 下 EXE）的 LastWriteTime 晚于本次改动** → 启动 → 读日志实证。
@@ -403,28 +428,28 @@ MixCut 面向广告投放团队，目标是**像剪映/Final Cut Pro 一样丝�
 - GitHub：`RoshanGH/mixcut-windows`（gh CLI 已登录，可直接操作）
 - Gitee：`jinxiushanhehao/mixcut-windows`（remote 名 `gitee`，SSH 已配置）
 
-每次发版**必须两个平台都推**，国内用户主要走 Gitee 下载（GitHub 慢/被墙）：
+每次发版**必须两个平台都推**，国内用户主要走 Gitee 渠道（GitHub 慢/被墙）。
 
-1. 改 `csproj` 版本号（Version / AssemblyVersion / FileVersion 三处对齐）
-2. `git tag -a vX.Y.Z -m "..."`
-3. `git push origin main && git push origin vX.Y.Z`（推 GitHub）
-4. `git push gitee main && git push gitee vX.Y.Z`（推 Gitee，**不要忘**）
-5. 本机 `scripts\win-build.ps1 -Publish` → `Compress-Archive` 打 `MixCut-vX.Y.Z-win-x64.zip`（产物就在本机，无需回传）
-6. `gh release create vX.Y.Z <zip> --repo RoshanGH/mixcut-windows --title ... --notes ...`
-7. **Gitee Release**：用 Open API（需 `GITEE_TOKEN` 环境变量，从 https://gitee.com/profile/personal_access_tokens 创建）
-   ```bash
-   curl -X POST "https://gitee.com/api/v5/repos/jinxiushanhehao/mixcut-windows/releases" \
-     -d "access_token=$GITEE_TOKEN&tag_name=vX.Y.Z&name=...&body=...&target_commitish=main"
-   # 拿到 release id 后上传附件：
-   curl -X POST "https://gitee.com/api/v5/repos/jinxiushanhehao/mixcut-windows/releases/<id>/attach_files" \
-     -F "access_token=$GITEE_TOKEN" -F "file=@<zip>"
-   ```
-   token 不在时，至少推完 main + tag，剩余 Release/zip 附件让用户网页手动建。
+**分工（2026-07-24 用户再次确认）**：我负责**打包 + 双平台发 release（tag + notes）**；
+**安装包不上传任何地方**（不挂 GitHub release 附件、不传 Gitee 附件、不传 CN 服务器）——
+打包产物留在本机，由用户自己放到下载网页（下载网页维护另有人做）。
+release notes 里下载指向 **http://47.119.175.47/mixcut/**（该网址只允许出现在 release notes 里，README 与应用界面一律不放）。
+
+1. 改版本号：`MixCut.csproj` 三处（Version / AssemblyVersion / FileVersion）+ `installer/MixCut.iss` 的 `MyAppVersion`
+2. publish（带防卡参数直调 dotnet，见 §构建定时检查铁律；别用 build-installer.ps1 内置 publish）→ 冒烟：跑 publish\MixCut.exe，日志确认 `[VcRuntimeDiag] all 6` + `[EnvDiag] pass=True`
+3. 打安装包：`%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe installer\MixCut.iss`（单文件，DiskSpanning=no），**产物留本机不上传**
+4. commit + `git tag -a vX.Y.Z` → `git push origin main && git push origin vX.Y.Z`（GitHub 走 credential manager）→ `git push gitee main && git push gitee vX.Y.Z`（Gitee 走 HTTPS+token，**不要忘**）
+5. **两版 notes**：Gitee 版把 GitHub 链接换成 Gitee 链接（独立渠道原则，Gitee 不引导去 GitHub）
+6. 发 GitHub release：本机无 gh CLI，用 API（token 从 credential manager 取）；body 用 `[IO.File]::ReadAllText`（`Get-Content -Raw` 会 422）
+7. 发 Gitee release：**必须用 PowerShell `Invoke-RestMethod` + UTF8 字节 body**（curl 发中文必乱码）：
+   `Invoke-RestMethod -Body ([Text.Encoding]::UTF8.GetBytes($json)) -ContentType 'application/json; charset=utf-8'`
+   `GITEE_TOKEN` 在 `.env`（gitignored）
 
 反模式：
 - ❌ 只发 GitHub 不发 Gitee（国内用户拿不到）
 - ❌ 两边 tag 不一致 / 版本号不一致
-- ❌ 只 push main 不 push tag（gh release 会找不到 tag）
+- ❌ 只 push main 不 push tag（release 会找不到 tag）
+- ❌ 把安装包上传到 release 附件 / CN 服务器（现行分工是只发 notes，包留本机给用户）
 
 #### Issue 只提 GitHub（不提 Gitee）⚠️
 
