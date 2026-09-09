@@ -60,7 +60,7 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: MixCut-Windows-V1.0.0-SourceBaseline-Installer
+          name: MixCut-Windows-V1.0.1-SourceBaseline-Installer
           path: installer/out-ci/*.exe
           if-no-files-found: error
           retention-days: 14
