@@ -30,6 +30,22 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Pin .NET 8 SDK for this build
+        shell: powershell
+        run: |
+          $sdk = (dotnet --list-sdks | ForEach-Object { ($_ -split ' ')[0] } | Where-Object { $_ -like '8.0.*' } | Sort-Object {[version]$_} -Descending | Select-Object -First 1)
+          if (-not $sdk) { throw 'No .NET 8 SDK found on runner' }
+          @" 
+          {
+            "sdk": {
+              "version": "$sdk",
+              "rollForward": "latestPatch"
+            }
+          }
+          "@ | Set-Content global.json -Encoding UTF8
+          Write-Host "Pinned SDK: $sdk"
+          dotnet --version
+
       - name: Enable MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -65,7 +81,8 @@ jobs:
           Copy-Item $ffmpeg.FullName (Join-Path $bin 'ffmpeg.exe') -Force
           Copy-Item $ffprobe.FullName (Join-Path $bin 'ffprobe.exe') -Force
 
-          # whisper.cpp: use official current Windows x64 release package.
+          # whisper.cpp: use official current Windows x64 package. Newer releases may rename
+          # CPU backend DLLs, so copy every DLL in the package instead of hard-coding names.
           $headers = @{ 'User-Agent' = 'MixCut-CI' }
           $rel = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest'
           $asset = $rel.assets | Where-Object { $_.name -eq 'whisper-bin-x64.zip' } | Select-Object -First 1
@@ -77,18 +94,32 @@ jobs:
           $whCli = Get-ChildItem $whDir -Recurse -Filter whisper-cli.exe | Select-Object -First 1
           if (-not $whCli) { throw 'whisper-cli.exe missing from whisper.cpp release' }
           Copy-Item $whCli.FullName (Join-Path $bin 'whisper-cli.exe') -Force
-          foreach ($dll in 'whisper.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll') {
-            $f = Get-ChildItem $whDir -Recurse -Filter $dll | Select-Object -First 1
-            if (-not $f) { throw "Missing whisper runtime $dll" }
-            Copy-Item $f.FullName (Join-Path $bin $dll) -Force
+          $whDlls = Get-ChildItem $whDir -Recurse -Filter '*.dll'
+          if (-not $whDlls) { throw 'No whisper runtime DLLs found in whisper.cpp release' }
+          foreach ($f in $whDlls) {
+            Copy-Item $f.FullName (Join-Path $bin $f.Name) -Force
           }
 
           # VC++ runtime required by whisper/demucs on clean Windows machines.
           foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','concrt140.dll','vcomp140.dll') {
             $src = Join-Path $env:WINDIR "System32\$dll"
-            if (-not (Test-Path $src)) { throw "Windows runner is missing $src" }
+            if (-not (Test-Path $src)) {
+              $src = Get-ChildItem $env:VCToolsRedistDir -Recurse -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $src -or -not (Test-Path $src)) { throw "Cannot locate VC runtime $dll" }
             Copy-Item $src (Join-Path $bin $dll) -Force
           }
+
+          # Prove whisper-cli can actually start with the packaged DLL set.
+          Push-Location $bin
+          & .\whisper-cli.exe --help *> whisper-smoke.txt
+          $whExit = $LASTEXITCODE
+          Pop-Location
+          if ($whExit -ne 0) {
+            Get-Content (Join-Path $bin 'whisper-smoke.txt') -ErrorAction SilentlyContinue
+            throw "whisper-cli smoke test failed: $whExit"
+          }
+          Remove-Item (Join-Path $bin 'whisper-smoke.txt') -Force -ErrorAction SilentlyContinue
 
           Write-Host 'Bundled base binaries:'
           Get-ChildItem $bin | Select-Object Name,Length
@@ -100,7 +131,6 @@ jobs:
           $root = Join-Path $env:RUNNER_TEMP 'demucs.cpp'
           git clone --recursive https://github.com/sevagh/demucs.cpp.git $root
           Set-Location $root
-          # Pin the source revision used while preparing this workflow, then make submodules match it.
           git checkout f1206e9adeea103aef4a636b9e62297cf1f8e34e
           git submodule update --init --recursive
 
@@ -145,7 +175,6 @@ jobs:
           $bin = 'src\MixCut\Resources\bin'
           $required = @(
             'ffmpeg.exe','ffprobe.exe','whisper-cli.exe','demucs.exe',
-            'whisper.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll',
             'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','concrt140.dll','vcomp140.dll'
           )
           $missing = $required | Where-Object { -not (Test-Path (Join-Path $bin $_)) }
@@ -171,9 +200,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          # The upstream repository does not commit the ~1.8 GB model files. The application source
-          # already contains first-use model download + resume logic, so this installer packages the
-          # exact UI/application code and all native engines; models are fetched by the app when needed.
+          # Upstream does not commit the very large model files. The original application source
+          # already has first-use model download + resume logic, so UI and application behavior remain source-faithful.
           $iss = @'
           #define MyAppName "MixCut"
           #define MyAppVersion "0.15.0"
