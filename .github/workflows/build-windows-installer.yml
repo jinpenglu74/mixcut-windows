@@ -26,6 +26,30 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Align release metadata to upstream v0.16.4
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # Upstream tag/release is v0.16.4, but its committed csproj/ISS metadata still says 0.15.0.
+          # Change metadata only for packaging; no UI, prompt, workflow or feature logic is changed.
+          $projPath = 'src\MixCut\MixCut.csproj'
+          $proj = Get-Content $projPath -Raw
+          $proj = $proj.Replace('<Version>0.15.0</Version>', '<Version>0.16.4</Version>')
+          $proj = $proj.Replace('<AssemblyVersion>0.15.0.0</AssemblyVersion>', '<AssemblyVersion>0.16.4.0</AssemblyVersion>')
+          $proj = $proj.Replace('<FileVersion>0.15.0.0</FileVersion>', '<FileVersion>0.16.4.0</FileVersion>')
+          if ($proj -notmatch '<Version>0\.16\.4</Version>') { throw 'Failed to align MixCut.csproj version to 0.16.4' }
+          Set-Content $projPath $proj -Encoding UTF8
+
+          $ciPath = '.github\scripts\build-installer-ci.ps1'
+          $ci = Get-Content $ciPath -Raw
+          $ci = $ci.Replace('#define MyAppVersion "0.15.0"', '#define MyAppVersion "0.16.4"')
+          $ci = $ci.Replace('OutputBaseFilename=MixCut-Setup-V1.0.1-SourceBaseline-win-x64', 'OutputBaseFilename=MixCut-Setup-v0.16.4-win-x64')
+          if ($ci -notmatch '#define MyAppVersion "0\.16\.4"') { throw 'Failed to align installer version to 0.16.4' }
+          Set-Content $ciPath $ci -Encoding UTF8
+
+          Write-Host 'Package metadata aligned: MixCut v0.16.4'
+
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
@@ -60,7 +84,7 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
-          name: MixCut-Windows-V1.0.1-SourceBaseline-Installer
+          name: MixCut-Windows-v0.16.4-Installer
           path: installer/out-ci/*.exe
           if-no-files-found: error
           retention-days: 14
