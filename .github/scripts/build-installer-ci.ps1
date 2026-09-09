@@ -38,6 +38,21 @@ $whDlls = Get-ChildItem $whDir -Recurse -Filter '*.dll'
 if (-not $whDlls) { throw 'No whisper runtime DLLs found' }
 foreach ($f in $whDlls) { Copy-Item $f.FullName (Join-Path $Bin $f.Name) -Force }
 
+# MixCut v0.15.0's own EnvironmentDiagnostics explicitly requires the legacy filename
+# "ggml-cpu.dll". New whisper.cpp Windows releases split CPU backends into names such as
+# ggml-cpu-haswell.dll / ggml-cpu-skylakex.dll and no longer ship that legacy alias.
+# Keep every modern backend DLL, and add a compatibility alias only when the legacy file
+# is absent. whisper-cli still loads its real matching backend by its modern filename.
+$legacyCpu = Join-Path $Bin 'ggml-cpu.dll'
+if (-not (Test-Path $legacyCpu)) {
+    $cpuBackend = Get-ChildItem $Bin -Filter 'ggml-cpu-*.dll' |
+        Sort-Object @{Expression={ if ($_.Name -ieq 'ggml-cpu-haswell.dll') { 0 } else { 1 } }}, Name |
+        Select-Object -First 1
+    if (-not $cpuBackend) { throw 'whisper.cpp package has no ggml-cpu*.dll backend to satisfy MixCut runtime contract' }
+    Copy-Item $cpuBackend.FullName $legacyCpu -Force
+    Write-Host "Added MixCut compatibility alias: $($cpuBackend.Name) -> ggml-cpu.dll"
+}
+
 # VC++ runtime files needed on a clean Windows installation.
 foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','concrt140.dll','vcomp140.dll') {
     $src = Join-Path $env:WINDIR "System32\$dll"
@@ -48,6 +63,13 @@ foreach ($dll in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp14
     if (-not $src -or -not (Test-Path $src)) { throw "Cannot locate VC runtime $dll" }
     Copy-Item $src (Join-Path $Bin $dll) -Force
 }
+
+# Exact runtime contract from the upstream MixCut build script + EnvironmentDiagnostics.
+$sourceRequired = @(
+    'ffmpeg.exe','ffprobe.exe','whisper-cli.exe','demucs.exe',
+    'whisper.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll',
+    'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','concrt140.dll','vcomp140.dll'
+)
 
 # whisper writes normal backend diagnostics to stderr; use cmd so PowerShell does not treat them as terminating errors.
 Push-Location $Bin
@@ -83,7 +105,7 @@ if(MSVC)
 else()
   set(CMAKE_CXX_FLAGS "-Wall -Wextra")
   set(CMAKE_CXX_FLAGS_DEBUG "-g -DEIGEN_FAST_MATH=0 -O0")
-  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=x86-64-v3 -DNDEBUG")
+  set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=x86-64-v3 /DNDEBUG")
 endif()
 '@
 $cmake = $cmake -replace 'project\(demucs\.cpp\)', $flags.Trim()
@@ -105,12 +127,12 @@ Copy-Item $demucs.FullName (Join-Path $Bin 'demucs.exe') -Force
 Set-Location $Root
 
 Write-Host '=== 4/6 Verify native components and publish WPF app ==='
-$required = @(
-    'ffmpeg.exe','ffprobe.exe','whisper-cli.exe','demucs.exe',
-    'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll','msvcp140_1.dll','msvcp140_2.dll','concrt140.dll','vcomp140.dll'
-)
-$missing = $required | Where-Object { -not (Test-Path (Join-Path $Bin $_)) }
-if ($missing) { throw ('Missing native components: ' + ($missing -join ', ')) }
+$missing = $sourceRequired | Where-Object {
+    $p = Join-Path $Bin $_
+    -not (Test-Path $p) -or (Get-Item $p).Length -eq 0
+}
+if ($missing) { throw ('Resources/bin missing source-required runtime files: ' + ($missing -join ', ')) }
+Write-Host 'Resources/bin runtime contract complete:'
 Get-ChildItem $Bin | Sort-Object Name | Format-Table Name,Length -AutoSize
 
 Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -123,8 +145,14 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet restore failed: $LASTEXITCODE" }
 dotnet publish 'src\MixCut\MixCut.csproj' -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishReadyToRun=true -p:IncludeNativeLibrariesForSelfExtract=true -nodeReuse:false -p:UseSharedCompilation=false -o publish -nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed: $LASTEXITCODE" }
 if (-not (Test-Path 'publish\MixCut.exe')) { throw 'publish\MixCut.exe missing' }
-if (-not (Test-Path 'publish\bin\ffmpeg.exe')) { throw 'publish\bin\ffmpeg.exe missing' }
-if (-not (Test-Path 'publish\bin\demucs.exe')) { throw 'publish\bin\demucs.exe missing' }
+
+$publishBin = Join-Path $Publish 'bin'
+$publishMissing = $sourceRequired | Where-Object {
+    $p = Join-Path $publishBin $_
+    -not (Test-Path $p) -or (Get-Item $p).Length -eq 0
+}
+if ($publishMissing) { throw ('publish/bin missing source-required runtime files: ' + ($publishMissing -join ', ')) }
+Write-Host 'publish/bin runtime contract complete. ggml-cpu.dll present:' (Test-Path (Join-Path $publishBin 'ggml-cpu.dll'))
 
 Write-Host '=== 5/6 Build Inno Setup installer ==='
 $iss = @'
@@ -158,7 +186,7 @@ WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 OutputDir=out-ci
-OutputBaseFilename=MixCut-Setup-V1.0.0-SourceBaseline-win-x64
+OutputBaseFilename=MixCut-Setup-V1.0.1-SourceBaseline-win-x64
 DiskSpanning=no
 ShowLanguageDialog=no
 SetupLogging=yes
