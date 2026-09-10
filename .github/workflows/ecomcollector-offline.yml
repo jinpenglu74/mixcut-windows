@@ -1,0 +1,141 @@
+name: Build EcomCollector V1.0.4 Offline Installer
+
+on:
+  push:
+    branches:
+      - build/ecomcollector-v1.0.4-offline
+    paths:
+      - 'ecomcollector-build/source.b64.part*'
+      - '.github/workflows/ecomcollector-offline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-offline-installer:
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Reassemble and extract EcomCollector source
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parts = Get-ChildItem ecomcollector-build\source.b64.part* | Sort-Object Name
+          if ($parts.Count -lt 1) { throw 'EcomCollector source archive chunks missing' }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes('ecomcollector-build\source.zip', [Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Force -Path ecomcollector | Out-Null
+          Expand-Archive -Path ecomcollector-build\source.zip -DestinationPath ecomcollector -Force
+          if (-not (Test-Path ecomcollector\build_windows.ps1)) { throw 'EcomCollector source extraction failed' }
+          Get-Content ecomcollector\src\ecom_collector\__init__.py
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: 'ecomcollector/requirements-dev.txt'
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup -y --no-progress
+          if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) { throw 'Inno Setup 6 missing' }
+
+      - name: Prepare FFmpeg offline payload
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg-release-essentials.zip'
+          $expanded = Join-Path $env:RUNNER_TEMP 'ffmpeg-expanded'
+          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
+          Expand-Archive -Path $zip -DestinationPath $expanded -Force
+          $ffmpeg = Get-ChildItem -Path $expanded -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $ffprobe = Get-ChildItem -Path $expanded -Recurse -Filter ffprobe.exe | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw 'FFmpeg payload files not found' }
+          New-Item -ItemType Directory -Force -Path ecomcollector\vendor\ffmpeg | Out-Null
+          Copy-Item $ffmpeg.FullName ecomcollector\vendor\ffmpeg\ffmpeg.exe -Force
+          Copy-Item $ffprobe.FullName ecomcollector\vendor\ffmpeg\ffprobe.exe -Force
+          Write-Host "FFmpeg: $($ffmpeg.Length) bytes"
+          Write-Host "FFprobe: $($ffprobe.Length) bytes"
+
+      - name: Build Windows x64 application and offline installer
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location ecomcollector
+          $env:ECOM_BUILD_PYTHON = (Get-Command python).Source
+          .\build_windows.ps1
+
+      - name: Silent-install offline package and run installed self-check
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem ecomcollector\release\*.exe | Where-Object { $_.Name -match 'V1\.0\.4' } | Select-Object -First 1
+          if (-not $installer) { throw 'V1.0.4 installer not found for install probe' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'EcomCollectorInstalled'
+          if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
+          $arguments = @(
+            '/VERYSILENT',
+            '/SUPPRESSMSGBOXES',
+            '/NORESTART',
+            ('/DIR="' + $installDir + '"')
+          )
+          $proc = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Offline installer returned exit code $($proc.ExitCode)" }
+          $exe = Join-Path $installDir 'EcomCollector.exe'
+          if (-not (Test-Path $exe)) { throw 'Installed EcomCollector.exe missing' }
+          $ffmpeg = Join-Path $installDir '_internal\vendor\ffmpeg\ffmpeg.exe'
+          $ffprobe = Join-Path $installDir '_internal\vendor\ffmpeg\ffprobe.exe'
+          if (-not (Test-Path $ffmpeg)) { throw 'Installed ffmpeg.exe missing' }
+          if (-not (Test-Path $ffprobe)) { throw 'Installed ffprobe.exe missing' }
+          & $exe --self-check
+          if ($LASTEXITCODE -ne 0) { throw "Installed application self-check failed: exit $LASTEXITCODE" }
+          Write-Host "Offline install probe passed at $installDir"
+
+      - name: Verify offline installer artifact
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Get-ChildItem ecomcollector\release\*.exe | Where-Object { $_.Name -match 'V1\.0\.4' } | Select-Object -First 1
+          if (-not $installer) { throw 'V1.0.4 installer not found' }
+          if ($installer.Length -lt 100MB) { throw "Installer unexpectedly small: $($installer.Length) bytes; offline payload may be incomplete" }
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $report = [ordered]@{
+            product = '电商商品采集与素材管理器'
+            version = '1.0.4'
+            installer_kind = 'full-offline-windows-x64'
+            install_time_network_required = $false
+            pyinstaller_bundled = $true
+            playwright_chromium_bundled = $true
+            ffmpeg_bundled = $true
+            installer_name = $installer.Name
+            size_bytes = $installer.Length
+            sha256 = $hash
+            build_os = 'windows-2022'
+            installer_silent_install_verified = $true
+            installed_app_self_check_verified = $true
+          }
+          $report | ConvertTo-Json -Depth 5 | Set-Content ecomcollector\release\V1.0.4-build-report.json -Encoding UTF8
+          "$hash  $($installer.Name)" | Set-Content ecomcollector\release\V1.0.4-SHA256SUMS.txt -Encoding ASCII
+          Write-Host "Installer: $($installer.FullName)"
+          Write-Host "Size: $($installer.Length)"
+          Write-Host "SHA256: $hash"
+
+      - name: Upload V1.0.4 offline installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: EcomCollector-V1.0.4-Full-Offline-Windows-x64
+          path: |
+            ecomcollector/release/*.exe
+            ecomcollector/release/V1.0.4-build-report.json
+            ecomcollector/release/V1.0.4-SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
