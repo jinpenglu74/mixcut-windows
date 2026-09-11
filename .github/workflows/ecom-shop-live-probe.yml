@@ -19,77 +19,50 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check playwright==1.62.0
           python -m playwright install chromium --no-shell
-      - name: Probe shop pages
+      - name: Probe real Taobao shop
         shell: pwsh
+        env:
+          PYTHONUTF8: '1'
         run: |
           @'
-          import asyncio, json, re
+          import asyncio, re
           from playwright.async_api import async_playwright
 
-          URLS = [
-              'https://shop66052862.taobao.com/category.htm?spm=pc_detail.30350276.shop_block.dshopinfo.3c037dd6m4qrE0',
-              'https://shop66052862.taobao.com/category.htm?search=y&pageNo=1',
-              'https://shop66052862.taobao.com/category.htm?search=y&pageNo=2',
-          ]
-
-          async def inspect(page, url):
-              network = []
-              def on_response(resp):
-                  u = resp.url
-                  if any(k in u.lower() for k in ('item', 'shop', 'search', 'category', 'mtop')):
-                      network.append((resp.status, u))
-              page.on('response', on_response)
-              print('\n=== NAVIGATE ===', url, flush=True)
-              try:
-                  resp = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
-                  print('HTTP', resp.status if resp else None, flush=True)
-              except Exception as exc:
-                  print('GOTO_ERROR', type(exc).__name__, repr(exc), flush=True)
-              await page.wait_for_timeout(6000)
-              title = await page.title()
-              html = await page.content()
-              print('FINAL_URL', page.url, flush=True)
-              print('TITLE', title, flush=True)
-              print('HTML_LEN', len(html), flush=True)
-              print('TEXT_HEAD', (await page.locator('body').inner_text())[:1200].replace('\n',' | '), flush=True)
-              selectors = {
-                  'taobao_item_href': 'a[href*="item.taobao.com/item.htm"]',
-                  'tmall_item_href': 'a[href*="detail.tmall.com/item.htm"]',
-                  'any_item_htm': 'a[href*="item.htm"]',
-                  'pageNo_links': 'a[href*="pageNo"]',
-                  'data_item_id': '[data-item-id], [data-itemid], [data-id]',
-              }
-              for name, sel in selectors.items():
-                  try:
-                      count = await page.locator(sel).count()
-                  except Exception as exc:
-                      count = f'ERR:{exc}'
-                  print('COUNT', name, count, flush=True)
-              hrefs = await page.locator('a[href]').evaluate_all("els => els.map(a => a.href || a.getAttribute('href') || '').filter(Boolean)")
-              item_hrefs = []
-              for href in hrefs:
-                  low = href.lower()
-                  if 'item.htm' in low or re.search(r'[?&](?:id|itemid)=\\d+', low):
-                      item_hrefs.append(href)
-              print('MATCHING_HREFS', len(item_hrefs), flush=True)
-              for href in item_hrefs[:40]:
-                  print('HREF', href, flush=True)
-              data_rows = await page.locator('[data-item-id], [data-itemid], [data-id]').evaluate_all("els => els.slice(0,30).map(e => ({tag:e.tagName, id:e.getAttribute('data-item-id')||e.getAttribute('data-itemid')||e.getAttribute('data-id'), text:(e.innerText||'').slice(0,200)}))")
-              print('DATA_ROWS', json.dumps(data_rows, ensure_ascii=False), flush=True)
-              ids = sorted(set(re.findall(r'(?i)(?:itemId|item_id|itemid|auctionId|nid)[\\"\\\'=: ]{1,12}(\\d{6,})', html)))
-              print('SCRIPT_ITEM_IDS', len(ids), ids[:40], flush=True)
-              print('NETWORK_MATCHES', len(network), flush=True)
-              for status, u in network[:80]:
-                  print('NET', status, u, flush=True)
-              page.remove_listener('response', on_response)
+          URL = 'https://shop66052862.taobao.com/category.htm?search=y&pageNo=1'
 
           async def main():
               async with async_playwright() as p:
                   browser = await p.chromium.launch(headless=True, channel='chromium')
                   context = await browser.new_context(locale='zh-CN', viewport={'width': 1440, 'height': 1000})
                   page = await context.new_page()
-                  for url in URLS:
-                      await inspect(page, url)
+                  response = await page.goto(URL, wait_until='domcontentloaded', timeout=60000)
+                  await page.wait_for_timeout(5000)
+                  final_url = page.url
+                  title = await page.title()
+                  html = await page.content()
+                  print('HTTP', response.status if response else None)
+                  print('FINAL_URL', final_url)
+                  print('TITLE', title)
+                  lower = final_url.lower()
+                  if 'login.taobao.com' in lower or 'passport.taobao.com' in lower:
+                      print('LIVE_GATE=PASS_AUTH_REQUIRED')
+                      await browser.close()
+                      return
+                  if 'security.taobao.com' in lower or 'punish' in lower or '访问验证' in title or '安全验证' in title:
+                      print('LIVE_GATE=PASS_VERIFICATION_REQUIRED')
+                      await browser.close()
+                      return
+                  hrefs = await page.locator('a[href]').evaluate_all("els => els.map(a => a.href || a.getAttribute('href') || '').filter(Boolean)")
+                  ids = set()
+                  for href in hrefs:
+                      match = re.search(r'[?&](?:id|itemId|itemid)=(\\d{6,})', href, re.I)
+                      if match:
+                          ids.add(match.group(1))
+                  ids.update(re.findall(r'(?i)(?:itemId|item_id|itemid|auctionId|nid)[\\"\\\'=: ]{1,12}(\\d{6,})', html))
+                  print('LIVE_PRODUCT_IDS', len(ids), sorted(ids)[:20])
+                  if not ids:
+                      raise RuntimeError('LIVE_GATE=FAIL_READY_PAGE_ZERO_PRODUCTS')
+                  print('LIVE_GATE=PASS_READY_WITH_PRODUCTS')
                   await browser.close()
 
           asyncio.run(main())
