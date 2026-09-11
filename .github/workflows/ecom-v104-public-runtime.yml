@@ -33,7 +33,8 @@ jobs:
           ) | Set-Content -Encoding ascii runtime\python312._pth
 
           python -m pip install --disable-pip-version-check --only-binary=:all: --target "$pwd\runtime\Lib\site-packages" `
-            'PySide6==6.11.2' `
+            'shiboken6==6.11.2' `
+            'PySide6_Essentials==6.11.2' `
             'playwright==1.62.0' `
             'httpx>=0.28,<1' `
             'lxml>=6.0,<7' `
@@ -53,6 +54,8 @@ jobs:
           @'
           import asyncio
           import PySide6
+          from PySide6.QtCore import QTimer
+          from PySide6.QtWidgets import QApplication, QWidget
           import httpx
           import lxml
           import pydantic
@@ -61,18 +64,25 @@ jobs:
           import playwright
           from playwright.async_api import async_playwright
 
+          app = QApplication([])
+          widget = QWidget()
+          widget.setWindowTitle('runtime-ok')
+          assert widget.windowTitle() == 'runtime-ok'
+          QTimer.singleShot(0, app.quit)
+          app.exec()
+
           async def main():
               async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True, channel="chromium")
+                  browser = await p.chromium.launch(headless=True, channel='chromium')
                   try:
                       page = await browser.new_page()
-                      await page.set_content("<title>runtime-ok</title><h1>ok</h1>")
-                      assert await page.title() == "runtime-ok"
+                      await page.set_content('<title>runtime-ok</title><h1>ok</h1>')
+                      assert await page.title() == 'runtime-ok'
                   finally:
                       await browser.close()
 
           asyncio.run(main())
-          print("RUNTIME_SELF_CHECK_OK")
+          print('RUNTIME_SELF_CHECK_OK')
           '@ | Set-Content -Encoding utf8 runtime_selfcheck.py
 
           & .\runtime\python.exe runtime_selfcheck.py
@@ -81,6 +91,8 @@ jobs:
           $chrome = Get-ChildItem runtime -Recurse -Filter chrome.exe | Select-Object -First 1
           if (-not $chrome) { throw 'Bundled Chromium chrome.exe not found' }
           Write-Host "Chromium: $($chrome.FullName) [$($chrome.Length) bytes]"
+
+          if (Test-Path runtime\Lib\site-packages\PySide6\QtMultimedia.pyd) { throw 'Qt Addons unexpectedly present' }
 
       - name: Write runtime manifest
         shell: pwsh
@@ -93,6 +105,7 @@ jobs:
             target = 'Windows x64'
             python = (& .\runtime\python.exe -c 'import sys; print(sys.version.split()[0])')
             pyside6 = (& .\runtime\python.exe -c 'import PySide6; print(PySide6.__version__)')
+            qt_bundle = 'PySide6_Essentials only'
             playwright = (& .\runtime\python.exe -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')
             httpx = (& .\runtime\python.exe -c 'import httpx; print(httpx.__version__)')
             lxml = (& .\runtime\python.exe -c 'import lxml; print(lxml.__version__)')
@@ -119,7 +132,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ecom-v104-public-runtime-windows-x64
+          name: ecom-v104-public-runtime-windows-x64-slim
           path: output/*
           if-no-files-found: error
           retention-days: 2
