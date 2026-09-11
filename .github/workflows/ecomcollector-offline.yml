@@ -1,5 +1,5 @@
 name: Build EcomCollector V1.0.4 Offline Installer
-# Rebuild trigger: align active tests with V1.0.4 offline architecture.
+# Rebuild trigger: use full-process FFmpeg probes; no truncated PowerShell pipelines.
 
 on:
   push:
@@ -97,10 +97,10 @@ jobs:
           $copiedFfmpeg = Get-Item ecomcollector\vendor\ffmpeg\ffmpeg.exe
           $copiedFfprobe = Get-Item ecomcollector\vendor\ffmpeg\ffprobe.exe
           if ($copiedFfmpeg.Length -le 1MB -or $copiedFfprobe.Length -le 1MB) { throw 'FFmpeg payload unexpectedly points to shim binaries' }
-          & $copiedFfmpeg.FullName -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw 'Copied ffmpeg.exe failed version probe' }
-          & $copiedFfprobe.FullName -version | Select-Object -First 1
-          if ($LASTEXITCODE -ne 0) { throw 'Copied ffprobe.exe failed version probe' }
+          $ffmpegProbe = Start-Process -FilePath $copiedFfmpeg.FullName -ArgumentList '-version' -NoNewWindow -Wait -PassThru
+          if ($ffmpegProbe.ExitCode -ne 0) { throw "Copied ffmpeg.exe failed version probe: exit $($ffmpegProbe.ExitCode)" }
+          $ffprobeProbe = Start-Process -FilePath $copiedFfprobe.FullName -ArgumentList '-version' -NoNewWindow -Wait -PassThru
+          if ($ffprobeProbe.ExitCode -ne 0) { throw "Copied ffprobe.exe failed version probe: exit $($ffprobeProbe.ExitCode)" }
           Write-Host "Real FFmpeg payload: $($copiedFfmpeg.Length) bytes from $($ffmpeg.FullName)"
           Write-Host "Real FFprobe payload: $($copiedFfprobe.Length) bytes from $($ffprobe.FullName)"
 
