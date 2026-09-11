@@ -1,0 +1,104 @@
+name: Ecom Taobao Shop Probe
+
+on:
+  push:
+    branches:
+      - ci/ecom-shop-probe-20260911
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.62.0
+          python -m playwright install chromium --no-shell
+      - name: Probe live Taobao shop
+        shell: pwsh
+        run: |
+          @'
+          import asyncio, json, re
+          from urllib.parse import urlparse, parse_qs
+          from playwright.async_api import async_playwright
+
+          URL = 'https://shop66052862.taobao.com/category.htm?spm=pc_detail.30350276.shop_block.dshopinfo.3c037dd6m4qrE0'
+          ITEM_PAT = re.compile(r'(?:item\.taobao\.com/item\.htm|detail\.tmall\.com/item\.htm)', re.I)
+          ID_PAT = re.compile(r'(?:itemId|item_id|itemid|auctionId|auction_id|id)["\'=: ]+(\d{5,})', re.I)
+
+          async def main():
+              result = {'requested_url': URL, 'responses': [], 'frames': [], 'candidates': []}
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True, channel='chromium')
+                  context = await browser.new_context(viewport={'width': 1440, 'height': 960}, locale='zh-CN')
+                  page = await context.new_page()
+                  def on_response(resp):
+                      u = resp.url
+                      if any(x in u.lower() for x in ('shop', 'item', 'search', 'auction', 'mtop')):
+                          if len(result['responses']) < 300:
+                              result['responses'].append(u)
+                  page.on('response', on_response)
+                  try:
+                      await page.goto(URL, wait_until='domcontentloaded', timeout=60000)
+                      await page.wait_for_timeout(8000)
+                      for _ in range(8):
+                          await page.mouse.wheel(0, 1400)
+                          await page.wait_for_timeout(700)
+                      result['final_url'] = page.url
+                      result['title'] = await page.title()
+                      result['html_len'] = len(await page.content())
+                      result['frame_count'] = len(page.frames)
+                      for i, frame in enumerate(page.frames):
+                          try:
+                              rows = await frame.eval_on_selector_all('a[href]', "els => els.map(a => ({href:a.href||a.getAttribute('href')||'', text:(a.innerText||a.getAttribute('title')||'').trim()}))")
+                              attrs = await frame.eval_on_selector_all('[data-id],[data-item-id],[data-itemid],[data-auction-id],[data-href],[data-url]', "els => els.slice(0,500).map(e => ({tag:e.tagName, id:e.getAttribute('data-id'), item:e.getAttribute('data-item-id')||e.getAttribute('data-itemid'), auction:e.getAttribute('data-auction-id'), href:e.getAttribute('data-href')||e.getAttribute('data-url'), text:(e.innerText||'').slice(0,180)}))")
+                              body = await frame.content()
+                              item_links = [r for r in rows if ITEM_PAT.search(r.get('href') or '')]
+                              ids = sorted(set(ID_PAT.findall(body)))[:100]
+                              result['frames'].append({'index':i,'url':frame.url,'anchors':len(rows),'item_links':item_links[:100],'attr_nodes':attrs[:100],'body_item_ids':ids})
+                              for r in item_links:
+                                  result['candidates'].append(r)
+                          except Exception as e:
+                              result['frames'].append({'index':i,'url':frame.url,'error':repr(e)})
+                      await page.screenshot(path='shop_probe.png', full_page=True)
+                      with open('shop_probe.html','w',encoding='utf-8') as f:
+                          f.write(await page.content())
+                  except Exception as e:
+                      result['error'] = repr(e)
+                  finally:
+                      await browser.close()
+              # dedupe candidates
+              dedup = {}
+              for r in result['candidates']:
+                  if r.get('href'): dedup[r['href']] = r
+              result['candidates'] = list(dedup.values())[:200]
+              with open('shop_probe.json','w',encoding='utf-8') as f:
+                  json.dump(result,f,ensure_ascii=False,indent=2)
+              print(json.dumps({
+                  'final_url': result.get('final_url'),
+                  'title': result.get('title'),
+                  'html_len': result.get('html_len'),
+                  'frame_count': result.get('frame_count'),
+                  'candidate_count': len(result.get('candidates',[])),
+                  'frame_summaries': [{'url':x.get('url'),'anchors':x.get('anchors'),'item_links':len(x.get('item_links',[])),'body_ids':len(x.get('body_item_ids',[])),'error':x.get('error')} for x in result.get('frames',[])],
+                  'response_count': len(result.get('responses',[])),
+                  'error': result.get('error'),
+              }, ensure_ascii=False, indent=2))
+
+          asyncio.run(main())
+          '@ | Set-Content -Encoding utf8 probe.py
+          python probe.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: taobao-shop-probe
+          path: |
+            shop_probe.json
+            shop_probe.html
+            shop_probe.png
+          if-no-files-found: warn
+          retention-days: 2
