@@ -1,5 +1,5 @@
 name: Build EcomCollector V1.0.4 Offline Installer
-# Rebuild trigger: copy real FFmpeg binaries, never Chocolatey shims.
+# Rebuild trigger: align active tests with V1.0.4 offline architecture.
 
 on:
   push:
@@ -53,6 +53,17 @@ jobs:
           Expand-Archive -Path ecomcollector-build\source.zip -DestinationPath ecomcollector -Force
           if (-not (Test-Path ecomcollector\build_windows.ps1)) { throw 'EcomCollector source extraction failed' }
           Get-Content ecomcollector\src\ecom_collector\__init__.py
+
+          # V1.0.4 release-test migration: async business tests need pytest-asyncio;
+          # the former online-bootstrap contract is obsolete and replaced by the offline contract.
+          $devReq = 'ecomcollector\requirements-dev.txt'
+          $devText = Get-Content $devReq -Raw
+          if ($devText -notmatch '(?m)^pytest-asyncio') { Add-Content $devReq "`npytest-asyncio>=0.24,<2" -Encoding UTF8 }
+          $legacyOnlineTest = 'ecomcollector\tests\test_windows_online_installer_contract.py'
+          if (Test-Path $legacyOnlineTest) {
+            Move-Item $legacyOnlineTest ($legacyOnlineTest + '.legacy') -Force
+          }
+          if (-not (Test-Path 'ecomcollector\tests\test_windows_offline_installer_contract.py')) { throw 'V1.0.4 offline installer contract tests missing' }
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
