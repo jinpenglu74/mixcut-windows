@@ -1,0 +1,101 @@
+name: Ecom Taobao Shop Live Probe
+
+on:
+  push:
+    branches:
+      - ci/ecom-shop-live-probe-20260911
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Playwright
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.62.0
+          python -m playwright install chromium --no-shell
+      - name: Probe shop pages
+        shell: pwsh
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: '0'
+        run: |
+          @'
+          import asyncio, json, re
+          from urllib.parse import urlparse
+          from playwright.async_api import async_playwright
+
+          URLS = [
+              'https://shop66052862.taobao.com/category.htm?spm=pc_detail.30350276.shop_block.dshopinfo.3c037dd6m4qrE0',
+              'https://shop66052862.taobao.com/category.htm?search=y&pageNo=1',
+              'https://shop66052862.taobao.com/category.htm?search=y&pageNo=2',
+          ]
+
+          async def inspect(page, url):
+              network = []
+              def on_response(resp):
+                  u = resp.url
+                  if any(k in u.lower() for k in ('item', 'shop', 'search', 'category', 'mtop')):
+                      network.append((resp.status, u))
+              page.on('response', on_response)
+              print('\n=== NAVIGATE ===', url, flush=True)
+              try:
+                  resp = await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+                  print('HTTP', resp.status if resp else None, flush=True)
+              except Exception as exc:
+                  print('GOTO_ERROR', type(exc).__name__, repr(exc), flush=True)
+              await page.wait_for_timeout(6000)
+              title = await page.title()
+              html = await page.content()
+              print('FINAL_URL', page.url, flush=True)
+              print('TITLE', title, flush=True)
+              print('HTML_LEN', len(html), flush=True)
+              print('TEXT_HEAD', (await page.locator('body').inner_text())[:1200].replace('\n',' | '), flush=True)
+              selectors = {
+                  'taobao_item_href': 'a[href*="item.taobao.com/item.htm"]',
+                  'tmall_item_href': 'a[href*="detail.tmall.com/item.htm"]',
+                  'any_item_htm': 'a[href*="item.htm"]',
+                  'pageNo_links': 'a[href*="pageNo"]',
+                  'data_item_id': '[data-item-id], [data-itemid], [data-id]',
+              }
+              for name, sel in selectors.items():
+                  try:
+                      count = await page.locator(sel).count()
+                  except Exception as exc:
+                      count = f'ERR:{exc}'
+                  print('COUNT', name, count, flush=True)
+              hrefs = await page.locator('a[href]').evaluate_all("els => els.map(a => a.href || a.getAttribute('href') || '').filter(Boolean)")
+              item_hrefs = []
+              for href in hrefs:
+                  low = href.lower()
+                  if 'item.htm' in low or re.search(r'[?&](?:id|itemid)=\\d+', low):
+                      item_hrefs.append(href)
+              print('MATCHING_HREFS', len(item_hrefs), flush=True)
+              for href in item_hrefs[:40]:
+                  print('HREF', href, flush=True)
+              data_rows = await page.locator('[data-item-id], [data-itemid], [data-id]').evaluate_all("els => els.slice(0,30).map(e => ({tag:e.tagName, id:e.getAttribute('data-item-id')||e.getAttribute('data-itemid')||e.getAttribute('data-id'), text:(e.innerText||'').slice(0,200)}))")
+              print('DATA_ROWS', json.dumps(data_rows, ensure_ascii=False), flush=True)
+              # Look for item ids embedded in source/script JSON even if anchors are lazy/hydrated later.
+              ids = sorted(set(re.findall(r'(?i)(?:itemId|item_id|itemid|auctionId|nid)[\\"\\\'=: ]{1,12}(\\d{6,})', html)))
+              print('SCRIPT_ITEM_IDS', len(ids), ids[:40], flush=True)
+              print('NETWORK_MATCHES', len(network), flush=True)
+              for status, u in network[:80]:
+                  print('NET', status, u, flush=True)
+              page.remove_listener('response', on_response)
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True, channel='chromium')
+                  context = await browser.new_context(locale='zh-CN', viewport={'width': 1440, 'height': 1000})
+                  page = await context.new_page()
+                  for url in URLS:
+                      await inspect(page, url)
+                  await browser.close()
+
+          asyncio.run(main())
+          '@ | Set-Content -Encoding utf8 probe.py
+          python probe.py
