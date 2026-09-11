@@ -1,5 +1,5 @@
 name: Build EcomCollector V1.0.4 Offline Installer
-# Rebuild trigger: use Windows runner/chocolatey FFmpeg instead of gyan.dev direct download.
+# Rebuild trigger: copy real FFmpeg binaries, never Chocolatey shims.
 
 on:
   push:
@@ -75,24 +75,23 @@ jobs:
         timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Stop'
-          $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
-          $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
-          if (-not $ffmpegCmd -or -not $ffprobeCmd) {
-            Write-Host 'FFmpeg not preinstalled on runner; installing through Chocolatey...'
-            choco install ffmpeg -y --no-progress --limit-output
-            $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
-            $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
-          }
-          if (-not $ffmpegCmd -or -not $ffprobeCmd) { throw 'FFmpeg/ffprobe unavailable on Windows builder' }
-          $ffmpeg = Get-Item $ffmpegCmd.Source
-          $ffprobe = Get-Item $ffprobeCmd.Source
+          choco install ffmpeg -y --no-progress --limit-output
+          $toolRoot = 'C:\ProgramData\chocolatey\lib\ffmpeg\tools'
+          $ffmpeg = Get-ChildItem -Path $toolRoot -Recurse -Filter ffmpeg.exe -File | Where-Object { $_.Length -gt 1MB } | Sort-Object Length -Descending | Select-Object -First 1
+          $ffprobe = Get-ChildItem -Path $toolRoot -Recurse -Filter ffprobe.exe -File | Where-Object { $_.Length -gt 1MB } | Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $ffmpeg -or -not $ffprobe) { throw 'Real FFmpeg/ffprobe binaries not found under Chocolatey tools' }
           New-Item -ItemType Directory -Force -Path ecomcollector\vendor\ffmpeg | Out-Null
           Copy-Item $ffmpeg.FullName ecomcollector\vendor\ffmpeg\ffmpeg.exe -Force
           Copy-Item $ffprobe.FullName ecomcollector\vendor\ffmpeg\ffprobe.exe -Force
-          & ecomcollector\vendor\ffmpeg\ffmpeg.exe -version | Select-Object -First 1
-          & ecomcollector\vendor\ffmpeg\ffprobe.exe -version | Select-Object -First 1
-          Write-Host "FFmpeg payload: $($ffmpeg.Length) bytes"
-          Write-Host "FFprobe payload: $($ffprobe.Length) bytes"
+          $copiedFfmpeg = Get-Item ecomcollector\vendor\ffmpeg\ffmpeg.exe
+          $copiedFfprobe = Get-Item ecomcollector\vendor\ffmpeg\ffprobe.exe
+          if ($copiedFfmpeg.Length -le 1MB -or $copiedFfprobe.Length -le 1MB) { throw 'FFmpeg payload unexpectedly points to shim binaries' }
+          & $copiedFfmpeg.FullName -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { throw 'Copied ffmpeg.exe failed version probe' }
+          & $copiedFfprobe.FullName -version | Select-Object -First 1
+          if ($LASTEXITCODE -ne 0) { throw 'Copied ffprobe.exe failed version probe' }
+          Write-Host "Real FFmpeg payload: $($copiedFfmpeg.Length) bytes from $($ffmpeg.FullName)"
+          Write-Host "Real FFprobe payload: $($copiedFfprobe.Length) bytes from $($ffprobe.FullName)"
 
       - name: Build Windows x64 application and offline installer
         shell: powershell
