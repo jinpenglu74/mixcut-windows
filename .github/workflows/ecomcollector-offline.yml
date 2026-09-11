@@ -6,6 +6,8 @@ on:
       - build/ecomcollector-v1.0.4-offline
     paths:
       - 'ecomcollector-build/source.b64.part*'
+      - 'ecomcollector-build/repair/**'
+      - 'ecomcollector-build/repair2/**'
       - '.github/workflows/ecomcollector-offline.yml'
   workflow_dispatch:
 
@@ -21,14 +23,31 @@ jobs:
       - name: Checkout build branch
         uses: actions/checkout@v4
 
-      - name: Reassemble and extract EcomCollector source
+      - name: Reassemble and verify EcomCollector source
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $parts = Get-ChildItem ecomcollector-build\source.b64.part* | Sort-Object Name
-          if ($parts.Count -lt 1) { throw 'EcomCollector source archive chunks missing' }
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          $chunks = New-Object System.Collections.Generic.List[string]
+          for ($i = 0; $i -le 8; $i++) {
+            $id = '{0:D2}' -f $i
+            if ($i -eq 1) {
+              $value = Get-Content 'ecomcollector-build\repair\part01.0' -Raw
+            } elseif ($i -eq 5) {
+              $value = ((0..3 | ForEach-Object { Get-Content ("ecomcollector-build\repair2\part05.$_") -Raw }) -join '')
+            } elseif ($i -eq 7) {
+              $value = ((0..3 | ForEach-Object { Get-Content ("ecomcollector-build\repair2\part07.$_") -Raw }) -join '')
+            } else {
+              $value = Get-Content ("ecomcollector-build\source.b64.part$id") -Raw
+            }
+            $chunks.Add(($value -replace '\s', ''))
+          }
+          $b64 = ($chunks -join '')
+          if ($b64.Length -ne 105040) { throw "Unexpected Base64 length: $($b64.Length), expected 105040" }
           [IO.File]::WriteAllBytes('ecomcollector-build\source.zip', [Convert]::FromBase64String($b64))
+          $sourceHash = (Get-FileHash 'ecomcollector-build\source.zip' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expectedHash = '56337971722e5fe25a670497260264fc07f0c4aceacd47325318d7c5bfb29eaa'
+          if ($sourceHash -ne $expectedHash) { throw "Source ZIP SHA256 mismatch: $sourceHash" }
+          Write-Host "Source ZIP SHA256 verified: $sourceHash"
           New-Item -ItemType Directory -Force -Path ecomcollector | Out-Null
           Expand-Archive -Path ecomcollector-build\source.zip -DestinationPath ecomcollector -Force
           if (-not (Test-Path ecomcollector\build_windows.ps1)) { throw 'EcomCollector source extraction failed' }
@@ -82,12 +101,7 @@ jobs:
           if (-not $installer) { throw 'V1.0.4 installer not found for install probe' }
           $installDir = Join-Path $env:RUNNER_TEMP 'EcomCollectorInstalled'
           if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
-          $arguments = @(
-            '/VERYSILENT',
-            '/SUPPRESSMSGBOXES',
-            '/NORESTART',
-            ('/DIR="' + $installDir + '"')
-          )
+          $arguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',('/DIR="' + $installDir + '"'))
           $proc = Start-Process -FilePath $installer.FullName -ArgumentList $arguments -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "Offline installer returned exit code $($proc.ExitCode)" }
           $exe = Join-Path $installDir 'EcomCollector.exe'
