@@ -1,5 +1,5 @@
 name: Build EcomCollector V1.0.4 Offline Installer
-# Rebuild trigger after all verified repair chunks are present.
+# Rebuild trigger: use Windows runner/chocolatey FFmpeg instead of gyan.dev direct download.
 
 on:
   push:
@@ -64,6 +64,7 @@ jobs:
 
       - name: Install Inno Setup
         shell: powershell
+        timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Stop'
           choco install innosetup -y --no-progress
@@ -71,23 +72,31 @@ jobs:
 
       - name: Prepare FFmpeg offline payload
         shell: powershell
+        timeout-minutes: 10
         run: |
           $ErrorActionPreference = 'Stop'
-          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg-release-essentials.zip'
-          $expanded = Join-Path $env:RUNNER_TEMP 'ffmpeg-expanded'
-          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile $zip -UseBasicParsing
-          Expand-Archive -Path $zip -DestinationPath $expanded -Force
-          $ffmpeg = Get-ChildItem -Path $expanded -Recurse -Filter ffmpeg.exe | Select-Object -First 1
-          $ffprobe = Get-ChildItem -Path $expanded -Recurse -Filter ffprobe.exe | Select-Object -First 1
-          if (-not $ffmpeg -or -not $ffprobe) { throw 'FFmpeg payload files not found' }
+          $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+          $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+          if (-not $ffmpegCmd -or -not $ffprobeCmd) {
+            Write-Host 'FFmpeg not preinstalled on runner; installing through Chocolatey...'
+            choco install ffmpeg -y --no-progress --limit-output
+            $ffmpegCmd = Get-Command ffmpeg.exe -ErrorAction SilentlyContinue
+            $ffprobeCmd = Get-Command ffprobe.exe -ErrorAction SilentlyContinue
+          }
+          if (-not $ffmpegCmd -or -not $ffprobeCmd) { throw 'FFmpeg/ffprobe unavailable on Windows builder' }
+          $ffmpeg = Get-Item $ffmpegCmd.Source
+          $ffprobe = Get-Item $ffprobeCmd.Source
           New-Item -ItemType Directory -Force -Path ecomcollector\vendor\ffmpeg | Out-Null
           Copy-Item $ffmpeg.FullName ecomcollector\vendor\ffmpeg\ffmpeg.exe -Force
           Copy-Item $ffprobe.FullName ecomcollector\vendor\ffmpeg\ffprobe.exe -Force
-          Write-Host "FFmpeg: $($ffmpeg.Length) bytes"
-          Write-Host "FFprobe: $($ffprobe.Length) bytes"
+          & ecomcollector\vendor\ffmpeg\ffmpeg.exe -version | Select-Object -First 1
+          & ecomcollector\vendor\ffmpeg\ffprobe.exe -version | Select-Object -First 1
+          Write-Host "FFmpeg payload: $($ffmpeg.Length) bytes"
+          Write-Host "FFprobe payload: $($ffprobe.Length) bytes"
 
       - name: Build Windows x64 application and offline installer
         shell: powershell
+        timeout-minutes: 45
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location ecomcollector
@@ -96,6 +105,7 @@ jobs:
 
       - name: Silent-install offline package and run installed self-check
         shell: powershell
+        timeout-minutes: 15
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = Get-ChildItem ecomcollector\release\*.exe | Where-Object { $_.Name -match 'V1\.0\.4' } | Select-Object -First 1
@@ -135,6 +145,7 @@ jobs:
             size_bytes = $installer.Length
             sha256 = $hash
             build_os = 'windows-2022'
+            source_zip_sha256 = '56337971722e5fe25a670497260264fc07f0c4aceacd47325318d7c5bfb29eaa'
             installer_silent_install_verified = $true
             installed_app_self_check_verified = $true
           }
