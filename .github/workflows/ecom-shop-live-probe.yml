@@ -21,12 +21,9 @@ jobs:
           python -m playwright install chromium --no-shell
       - name: Probe shop pages
         shell: pwsh
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: '0'
         run: |
           @'
           import asyncio, json, re
-          from urllib.parse import urlparse
           from playwright.async_api import async_playwright
 
           URLS = [
@@ -79,7 +76,6 @@ jobs:
                   print('HREF', href, flush=True)
               data_rows = await page.locator('[data-item-id], [data-itemid], [data-id]').evaluate_all("els => els.slice(0,30).map(e => ({tag:e.tagName, id:e.getAttribute('data-item-id')||e.getAttribute('data-itemid')||e.getAttribute('data-id'), text:(e.innerText||'').slice(0,200)}))")
               print('DATA_ROWS', json.dumps(data_rows, ensure_ascii=False), flush=True)
-              # Look for item ids embedded in source/script JSON even if anchors are lazy/hydrated later.
               ids = sorted(set(re.findall(r'(?i)(?:itemId|item_id|itemid|auctionId|nid)[\\"\\\'=: ]{1,12}(\\d{6,})', html)))
               print('SCRIPT_ITEM_IDS', len(ids), ids[:40], flush=True)
               print('NETWORK_MATCHES', len(network), flush=True)
@@ -89,7 +85,7 @@ jobs:
 
           async def main():
               async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True, channel='chromium')
+                  browser = await p.chromium.launch(headless=True)
                   context = await browser.new_context(locale='zh-CN', viewport={'width': 1440, 'height': 1000})
                   page = await context.new_page()
                   for url in URLS:
