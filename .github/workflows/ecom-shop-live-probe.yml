@@ -85,7 +85,7 @@ jobs:
 
           async def main():
               async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True)
+                  browser = await p.chromium.launch(headless=True, channel='chromium')
                   context = await browser.new_context(locale='zh-CN', viewport={'width': 1440, 'height': 1000})
                   page = await context.new_page()
                   for url in URLS:
