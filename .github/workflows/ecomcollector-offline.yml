@@ -1,5 +1,4 @@
 name: Build EcomCollector V1.0.4 Offline Installer
-# Rebuild trigger: use full-process FFmpeg probes; no truncated PowerShell pipelines.
 
 on:
   push:
@@ -54,16 +53,20 @@ jobs:
           if (-not (Test-Path ecomcollector\build_windows.ps1)) { throw 'EcomCollector source extraction failed' }
           Get-Content ecomcollector\src\ecom_collector\__init__.py
 
-          # V1.0.4 release-test migration: async business tests need pytest-asyncio;
-          # the former online-bootstrap contract is obsolete and replaced by the offline contract.
           $devReq = 'ecomcollector\requirements-dev.txt'
           $devText = Get-Content $devReq -Raw
           if ($devText -notmatch '(?m)^pytest-asyncio') { Add-Content $devReq "`npytest-asyncio>=0.24,<2" -Encoding UTF8 }
+
           $legacyOnlineTest = 'ecomcollector\tests\test_windows_online_installer_contract.py'
-          if (Test-Path $legacyOnlineTest) {
-            Move-Item $legacyOnlineTest ($legacyOnlineTest + '.legacy') -Force
-          }
+          if (Test-Path $legacyOnlineTest) { Move-Item $legacyOnlineTest ($legacyOnlineTest + '.legacy') -Force }
           if (-not (Test-Path 'ecomcollector\tests\test_windows_offline_installer_contract.py')) { throw 'V1.0.4 offline installer contract tests missing' }
+
+          $accountTest = 'ecomcollector\tests\test_account_service.py'
+          $accountText = Get-Content $accountTest -Raw
+          $oldAssert = '    assert row["profile_dir"].endswith("browser_profiles/taobao")'
+          $newAssert = '    assert Path(row["profile_dir"]).parts[-2:] == ("browser_profiles", "taobao")'
+          if (-not $accountText.Contains($oldAssert)) { throw 'Expected cross-platform profile path assertion not found' }
+          Set-Content $accountTest ($accountText.Replace($oldAssert, $newAssert)) -Encoding UTF8
 
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -101,8 +104,8 @@ jobs:
           if ($ffmpegProbe.ExitCode -ne 0) { throw "Copied ffmpeg.exe failed version probe: exit $($ffmpegProbe.ExitCode)" }
           $ffprobeProbe = Start-Process -FilePath $copiedFfprobe.FullName -ArgumentList '-version' -NoNewWindow -Wait -PassThru
           if ($ffprobeProbe.ExitCode -ne 0) { throw "Copied ffprobe.exe failed version probe: exit $($ffprobeProbe.ExitCode)" }
-          Write-Host "Real FFmpeg payload: $($copiedFfmpeg.Length) bytes from $($ffmpeg.FullName)"
-          Write-Host "Real FFprobe payload: $($copiedFfprobe.Length) bytes from $($ffprobe.FullName)"
+          Write-Host "Real FFmpeg payload: $($copiedFfmpeg.Length) bytes"
+          Write-Host "Real FFprobe payload: $($copiedFfprobe.Length) bytes"
 
       - name: Build Windows x64 application and offline installer
         shell: powershell
