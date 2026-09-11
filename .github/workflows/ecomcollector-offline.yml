@@ -1,4 +1,5 @@
 name: Build EcomCollector V1.0.4 Offline Installer
+# Rebuild trigger after all verified repair chunks are present.
 
 on:
   push:
