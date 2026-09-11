@@ -1,0 +1,125 @@
+name: Ecom V1.0.4 Public Runtime Bundle
+
+on:
+  push:
+    branches:
+      - ci/ecom-v104-runtime-20260911
+
+jobs:
+  runtime:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build portable Python runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force runtime\Lib\site-packages | Out-Null
+          Invoke-WebRequest 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip' -OutFile python-embed.zip
+          Expand-Archive python-embed.zip runtime
+
+          @(
+            'python312.zip'
+            '.'
+            'Lib\site-packages'
+            'import site'
+          ) | Set-Content -Encoding ascii runtime\python312._pth
+
+          python -m pip install --disable-pip-version-check --only-binary=:all: --target "$pwd\runtime\Lib\site-packages" `
+            'PySide6==6.11.2' `
+            'playwright==1.62.0' `
+            'httpx>=0.28,<1' `
+            'lxml>=6.0,<7' `
+            'pydantic==2.13.5' `
+            'Pillow==12.3.0' `
+            'openpyxl>=3.1,<4'
+
+          $env:PLAYWRIGHT_BROWSERS_PATH = '0'
+          & .\runtime\python.exe -m playwright install chromium --no-shell
+          if ($LASTEXITCODE -ne 0) { throw "playwright install failed: $LASTEXITCODE" }
+
+      - name: Verify imports and bundled Chromium
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PLAYWRIGHT_BROWSERS_PATH = '0'
+          @'
+          import asyncio
+          import PySide6
+          import httpx
+          import lxml
+          import pydantic
+          import PIL
+          import openpyxl
+          import playwright
+          from playwright.async_api import async_playwright
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True, channel="chromium")
+                  try:
+                      page = await browser.new_page()
+                      await page.set_content("<title>runtime-ok</title><h1>ok</h1>")
+                      assert await page.title() == "runtime-ok"
+                  finally:
+                      await browser.close()
+
+          asyncio.run(main())
+          print("RUNTIME_SELF_CHECK_OK")
+          '@ | Set-Content -Encoding utf8 runtime_selfcheck.py
+
+          & .\runtime\python.exe runtime_selfcheck.py
+          if ($LASTEXITCODE -ne 0) { throw "runtime self-check failed: $LASTEXITCODE" }
+
+          $chrome = Get-ChildItem runtime -Recurse -Filter chrome.exe | Select-Object -First 1
+          if (-not $chrome) { throw 'Bundled Chromium chrome.exe not found' }
+          Write-Host "Chromium: $($chrome.FullName) [$($chrome.Length) bytes]"
+
+      - name: Write runtime manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $chrome = Get-ChildItem runtime -Recurse -Filter chrome.exe | Select-Object -First 1
+          $manifest = [ordered]@{
+            product = 'EcomCollector public Windows runtime'
+            version = '1.0.4'
+            target = 'Windows x64'
+            python = (& .\runtime\python.exe -c 'import sys; print(sys.version.split()[0])')
+            pyside6 = (& .\runtime\python.exe -c 'import PySide6; print(PySide6.__version__)')
+            playwright = (& .\runtime\python.exe -c 'import importlib.metadata; print(importlib.metadata.version("playwright"))')
+            httpx = (& .\runtime\python.exe -c 'import httpx; print(httpx.__version__)')
+            lxml = (& .\runtime\python.exe -c 'import lxml; print(lxml.__version__)')
+            pydantic = (& .\runtime\python.exe -c 'import pydantic; print(pydantic.__version__)')
+            pillow = (& .\runtime\python.exe -c 'import PIL; print(PIL.__version__)')
+            openpyxl = (& .\runtime\python.exe -c 'import openpyxl; print(openpyxl.__version__)')
+            chromium_exe = $chrome.FullName.Substring((Resolve-Path runtime).Path.Length + 1)
+            chromium_bytes = $chrome.Length
+            runtime_self_check = 'passed'
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 runtime\runtime_manifest.json
+          Get-Content runtime\runtime_manifest.json
+
+      - name: Package runtime artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force output | Out-Null
+          Compress-Archive -Path runtime\* -DestinationPath output\EcomRuntime_V1.0.4_Windows_x64.zip -Force
+          $hash = (Get-FileHash output\EcomRuntime_V1.0.4_Windows_x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  EcomRuntime_V1.0.4_Windows_x64.zip" | Set-Content -Encoding ascii output\EcomRuntime_V1.0.4_Windows_x64_SHA256SUMS.txt
+          Get-Item output\EcomRuntime_V1.0.4_Windows_x64.zip | Format-List FullName,Length
+          Get-Content output\EcomRuntime_V1.0.4_Windows_x64_SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ecom-v104-public-runtime-windows-x64
+          path: output/*
+          if-no-files-found: error
+          retention-days: 2
