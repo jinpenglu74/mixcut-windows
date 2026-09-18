@@ -1,0 +1,92 @@
+name: Temporary FundForecast v1.3.5 Windows build
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '_tmp_fundforecast_v135/**'
+      - '.github/workflows/tmp-fundforecast-v135-build.yml'
+
+jobs:
+  build-test:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Restore v1.3.4 source and apply v1.3.5 patch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch origin 72ed64be1b2af5418ea209b7386f8df69507ff08 --depth=1
+          $b64 = (& git show "72ed64be1b2af5418ea209b7386f8df69507ff08:_tmp_fundforecast_build/source_v1.3.4.zip.b64" | Out-String).Trim()
+          $zip = Join-Path $env:RUNNER_TEMP "fundforecast-v1.3.4.zip"
+          [IO.File]::WriteAllBytes($zip, [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($hash -ne "44cdbdfcd3e84c8d4f6ba762c7fe8ec2b621e6f72dafc3a220c792f0fd228602") {
+            throw "Base source SHA256 mismatch: $hash"
+          }
+          New-Item -ItemType Directory -Path work -Force | Out-Null
+          Expand-Archive -LiteralPath $zip -DestinationPath work -Force
+          Push-Location work
+          python ..\_tmp_fundforecast_v135\apply_v135.py
+          Pop-Location
+
+      - name: Install build dependencies
+        shell: pwsh
+        working-directory: work
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run Python regression
+        working-directory: work
+        run: python -m pytest -q
+
+      - name: Run frontend regression
+        shell: pwsh
+        working-directory: work
+        run: |
+          Get-ChildItem tests/frontend/*.test.mjs | ForEach-Object { node $_.FullName }
+
+      - name: Build PyInstaller application
+        working-directory: work
+        run: pyinstaller --noconfirm --clean FundForecastApp.spec
+
+      - name: Build standard Inno Setup installer
+        shell: pwsh
+        working-directory: work
+        run: .\packaging\build-installer.ps1 -OutputDirectory .\release
+
+      - name: Fresh install / self-test / uninstall
+        shell: pwsh
+        working-directory: work
+        run: |
+          $installer = Get-ChildItem .\release\*.exe | Select-Object -First 1
+          .\packaging\test-installed.ps1 -InstallerPath $installer.FullName
+          "WINDOWS_INSTALL_SMOKE_OK"
+
+      - name: Validate installer structure and SHA256
+        shell: pwsh
+        working-directory: work
+        run: |
+          $installer = Get-ChildItem .\release\*.exe | Select-Object -First 1
+          $bytes = [IO.File]::ReadAllBytes($installer.FullName)
+          if ($bytes.Length -lt 10000000) { throw "Installer unexpectedly small." }
+          if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "Not a Windows PE executable." }
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant()
+          "$hash  $($installer.Name)" | Set-Content -LiteralPath .\release\SHA256SUMS.txt -Encoding ASCII
+          Get-Item $installer.FullName | Format-List Name,Length
+          Get-Content .\release\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FundForecast-v1.3.5-Windows-Inno
+          path: |
+            work/release/*.exe
+            work/release/SHA256SUMS.txt
+          if-no-files-found: error
